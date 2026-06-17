@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mult-market-trading"
+version = "0.1.0"
+description = "Diversified multi-market (FX/stock/crypto) trend-following trading platform with a deterministic shared core."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Daniel Holtvelander" }]
+keywords = ["trading", "quant", "trend-following", "backtest", "forex", "crypto"]
+
+dependencies = [
+  "typer>=0.12,<1.0",
+  "rich>=13.7",
+  "pandas>=2.2,<3.0",
+  "pyarrow>=16.0",
+  "pydantic>=2.7,<3.0",
+  "pydantic-settings>=2.3,<3.0",
+  "python-dateutil>=2.9",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+tfx = "tfx.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tfx"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning:tfx.*"]
