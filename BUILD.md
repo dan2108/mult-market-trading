@@ -69,7 +69,7 @@ trend-fx/
 
 ## Build order
 
-`data-pull` ✓ → `costs` → `signal` → `sizing` → `risk` → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
+`data-pull` ✓ → `costs` ✓ → `signal` → `sizing` → `risk` → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
 
 ---
 
@@ -83,26 +83,18 @@ Delivered: fetch → clean → timezone-align → cache for the basket, behind `
 
 ---
 
-## Step 2 — `costs`
+## Step 2 — `costs`  ·  DONE
 
-**Goal:** a deterministic all-in cost model — spread + commission + swap (overnight financing) + slippage — pessimistic by default. Called by `backtest` on every fill and every overnight hold; later reconciled against real broker costs.
+Delivered: deterministic all-in cost model behind `CostModel.apply()`/`.breakdown()` — spread
+(pessimism-floored) + commission + slippage (always adverse) + sign-correct swap accrual (long vs
+short), resolved per-instrument then per-asset-class, never a silent zero-cost fallthrough. Costs
+are a non-negative return-fraction-of-equity that scales linearly with size — currency-agnostic.
+All 9 acceptance tests + unit tests green (35 total); ruff clean.
 
-**Scope —** in: per-instrument/asset-class cost params, a function applying cost to a fill and swap to a held position. out: signal/sizing/risk, execution, real-broker fetching.
-
-**Interface:** `CostModel.apply(instrument, side, size, price, nights_held) -> cost` in the same PnL/return units the backtest uses; plus a documented per-instrument param schema.
-
-**Acceptance tests:**
-1. Buy-then-sell at a flat price loses exactly the modeled round-trip cost (spread + commission).
-2. Swap accrues per night held: N nights → N× nightly swap, sign-correct (long vs short differ).
-3. Cost scales linearly with size.
-4. Slippage is always adverse — never improves a fill.
-5. Pessimism floor: modeled spread ≥ a configured per-instrument floor (no zero-cost trades).
-6. Per-asset-class params resolve correctly (FX swap ≠ index/commodity).
-7. No look-ahead — cost at t uses only params known at t.
-8. Deterministic; units consistent with the backtest.
-9. Fixture trade matches a hand-computed cost exactly.
-
-**Done:** tests green; params documented and flagged **provisional** pending real-broker reconciliation.
+**Open before building on it:** every param is flagged **provisional** — placeholder,
+pessimistic retail-broker magnitudes, not yet reconciled against a real broker (tracked for
+Phase 2 `broker`). Carry credits are clamped to zero in the all-in cost, but the signed value
+survives in `CostBreakdown.swap_raw` for that future reconciliation.
 
 ---
 
