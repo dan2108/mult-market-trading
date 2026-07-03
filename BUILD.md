@@ -69,7 +69,7 @@ trend-fx/
 
 ## Build order
 
-`data-pull` ✓ → `costs` ✓ → `signal` → `sizing` → `risk` → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
+`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` → `risk` → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
 
 ---
 
@@ -98,25 +98,20 @@ survives in `CostBreakdown.swap_raw` for that future reconciliation.
 
 ---
 
-## Step 3 — `signal`  (core)
+## Step 3 — `signal`  (core)  ·  DONE
 
-**Goal:** from the point-in-time panel, compute a target direction per instrument per bar via a simple trend rule (time-series momentum / MA-cross / breakout). Pure, deterministic, few params.
+Delivered: deterministic time-series momentum behind `signal.compute(panel, params)` — per
+instrument per bar, direction = sign of the trailing `lookback`-bar close return, in {-1, 0, +1};
+NaN through warm-up, on padded bars, and wherever no real close exists (`tradable_mask`). Timing
+is one shared rule: `shift_for_execution(directions)` applies the decision at t to the next
+tradeable bar — imported by both backtest and live so the convention can never drift. Pure
+function of the point-in-time panel (no I/O, wall-clock, RNG, hidden state). All 8 acceptance
+tests + unit tests green, anchored by a hand-computed fixture slice (`signal_handcalc.md`).
 
-**Scope —** in: the parameterised trend rule; an explicit timing convention. out: sizing, risk, execution, costs, data.
-
-**Interface:** `signal.compute(panel, params) -> direction per instrument per bar` (-1/0/+1 or a score in [-1,1]). Signal at bar t uses data ≤ t and is acted on at the **next** tradeable bar.
-
-**Acceptance tests:**
-1. **No look-ahead:** signal[t] is a function of data ≤ t only — perturbing future bars must not change signal[t].
-2. **Timing:** the position from signal[t] is applied at t+1 (or next tradeable bar), asserted explicitly.
-3. Pure & deterministic — same panel+params → same signals; no global state.
-4. Direction sanity — long on a synthetic uptrend, short on a downtrend, ~flat on noise.
-5. Padded/NaN bars produce no signal (no trading a non-existent bar).
-6. Parameter bounds respected; degenerate params handled.
-7. Per-instrument independence across the basket.
-8. Fixture slice matches a hand-computed signal.
-
-**Done:** tests green; timing convention documented; param ranges left **validate-driven**, not hand-chosen.
+**Open before building on it:** `lookback` (default 20) is a PROVISIONAL placeholder — the real
+parameter range is evidenced at the `validate` stage, never hand-chosen. A multi-lookback
+ensemble upgrade (mean of signs across ~1–12-month lookbacks, graded [-1, +1]) is planned before
+`backtest` lands; ensemble-vs-single is decided by `validate`, not by taste.
 
 ---
 
