@@ -48,4 +48,4 @@ Green tests = done; not green = not done, regardless of what any agent claims.
 
 ## Build order
 `data-pull` → `costs` → core (`signal`/`sizing`/`risk`) → `backtest` → `validate` → `report`
-→ (Phase 2: `broker` → `live` → `monitor`). **Currently at: risk (data-pull, costs, signal, sizing done).**
+→ (Phase 2: `broker` → `live` → `monitor`). **Currently at: backtest (data-pull, costs, core: signal/sizing/risk done).**
