@@ -100,18 +100,21 @@ survives in `CostBreakdown.swap_raw` for that future reconciliation.
 
 ## Step 3 — `signal`  (core)  ·  DONE
 
-Delivered: deterministic time-series momentum behind `signal.compute(panel, params)` — per
-instrument per bar, direction = sign of the trailing `lookback`-bar close return, in {-1, 0, +1};
-NaN through warm-up, on padded bars, and wherever no real close exists (`tradable_mask`). Timing
-is one shared rule: `shift_for_execution(directions)` applies the decision at t to the next
-tradeable bar — imported by both backtest and live so the convention can never drift. Pure
-function of the point-in-time panel (no I/O, wall-clock, RNG, hidden state). All 8 acceptance
-tests + unit tests green, anchored by a hand-computed fixture slice (`signal_handcalc.md`).
+Delivered: deterministic multi-lookback time-series momentum behind `signal.compute(panel,
+params)` — per instrument per bar, direction = equal-weight mean of sign(trailing return) across
+the lookback ensemble, graded in [-1, +1] (a single-entry tuple degenerates to the discrete
+{-1, 0, +1} rule, pinned verbatim to the original hand calc as a regression anchor). NaN through
+warm-up (ALL horizons' anchors required — no regime discontinuity inside validate folds), on
+padded bars, and wherever no real close exists (`tradable_mask`). Timing is one shared rule:
+`shift_for_execution(directions)` applies the decision at t to the next tradeable bar — imported
+by both backtest and live so the convention can never drift. Pure function of the point-in-time
+panel (no I/O, wall-clock, RNG, hidden state). All 8 acceptance tests + ensemble unit tests
+green, anchored by hand-computed fixture slices (`signal_handcalc.md`) and a compositional
+property (ensemble ≡ mean of its single-lookback members).
 
-**Open before building on it:** `lookback` (default 20) is a PROVISIONAL placeholder — the real
-parameter range is evidenced at the `validate` stage, never hand-chosen. A multi-lookback
-ensemble upgrade (mean of signs across ~1–12-month lookbacks, graded [-1, +1]) is planned before
-`backtest` lands; ensemble-vs-single is decided by `validate`, not by taste.
+**Open before building on it:** `lookbacks` (default `(21, 63, 126, 252)`, ~1–12 months) is a
+PROVISIONAL placeholder — the real choice, including ensemble vs single lookback, is swept and
+evidenced at the `validate` stage, never hand-chosen.
 
 ---
 

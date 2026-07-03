@@ -290,6 +290,25 @@ def test_holiday_pad_does_not_freeze_other_instruments_covariance():
         np.testing.assert_allclose(weight.iloc[t].to_numpy(), expected, rtol=1e-9)
 
 
+def test_fractional_directions_scale_raw_weights_proportionally():
+    """The ensemble signal emits graded directions in [-1, +1], not just {-1, 0, +1}: sizing must
+    pass conviction straight through stage 1 (raw weight = direction / vol), keep exact zeros at
+    direction == 0, and keep NaN as "no decision"."""
+    a = _oscillating(100.0, 0.01, 2, 30)
+    b = _oscillating(100.0, 0.01, 2, 30)  # identical path -> identical vol
+    panel = _panel({"A": a, "B": b})
+    directions = pd.DataFrame({"A": 1.0, "B": 0.5}, index=panel.index)
+    weight = size(panel, directions, SizingParams(ewma_halflife=5.0, leverage_cap=100.0))
+
+    last = weight.iloc[-1]
+    assert last["A"] == pytest.approx(2.0 * last["B"], rel=1e-9)  # 2:1 conviction, equal vol
+
+    mixed = pd.DataFrame({"A": [np.nan] * 30, "B": [0.0] * 30}, index=panel.index)
+    mixed_weight = size(panel, mixed, SizingParams(ewma_halflife=5.0, leverage_cap=100.0))
+    assert mixed_weight["A"].isna().all()  # NaN direction stays "no decision"
+    assert (mixed_weight["B"].iloc[10:] == 0.0).all()  # flat stays exactly 0.0
+
+
 def test_partial_active_basket_does_not_poison_other_instruments():
     """One instrument lacking a direction on a bar must not silently zero the others: a single
     exchange holiday for instrument B must not flatten instrument A's real position that day.
