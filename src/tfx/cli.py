@@ -104,6 +104,12 @@ def data_pull(
     ),
     sample_dir: str | None = typer.Option(None, "--sample-dir", help="Override fixture dir."),
     cache_dir: str | None = typer.Option(None, "--cache-dir", help="Override cache dir."),
+    raw_dir: str | None = typer.Option(
+        None, "--raw-dir", help="Override raw-snapshot dir (snapshot-backed sources)."
+    ),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Force re-download of provider snapshots (else reuse)."
+    ),
 ) -> None:
     """Fetch -> clean -> align -> cache the basket for a date range."""
     settings = get_settings()
@@ -111,9 +117,13 @@ def data_pull(
     src = source or settings.data.provider
     cdir = cache_dir or settings.cache_dir
     sdir = sample_dir or settings.sample_dir
+    rdir = raw_dir or settings.raw_dir
 
     try:
-        result = pull_data(syms, start, end, source=src, cache_dir=cdir, sample_dir=sdir)
+        result = pull_data(
+            syms, start, end, source=src, cache_dir=cdir, sample_dir=sdir,
+            raw_dir=rdir, refresh=refresh,
+        )
     except (DataError, FileNotFoundError, NotImplementedError, ValueError, KeyError) as exc:
         _fail(str(exc))
 
@@ -133,6 +143,35 @@ def data_pull(
         )
     console.print(table)
     console.print("Next: run [bold]tfx data report[/bold] to inspect coverage and gaps.")
+
+
+@data_app.command("snapshot")
+def data_snapshot(
+    symbol: str = typer.Option(..., "--symbol", help="Canonical symbol, e.g. 'EUR/USD'."),
+    file: str = typer.Option(
+        ..., "--file", help="A provider CSV downloaded manually (e.g. in a browser)."
+    ),
+    raw_dir: str | None = typer.Option(None, "--raw-dir", help="Override raw-snapshot dir."),
+) -> None:
+    """Register a manually-downloaded stooq CSV as a verified snapshot (bytes + sha256 sidecar).
+
+    Escape hatch for networks where the stooq endpoint serves an anti-bot challenge: download
+    the CSV in a browser, then register it here so `tfx data pull --source stooq` can use it.
+    """
+    from pathlib import Path
+
+    from .data.sources.stooq import StooqSource
+
+    settings = get_settings()
+    rdir = Path(raw_dir or settings.raw_dir) / "stooq"
+    try:
+        instrument = get_instrument(symbol)
+        raw = Path(file).read_bytes()
+        path = StooqSource(rdir).write_snapshot(instrument, raw)
+    except (DataError, FileNotFoundError, KeyError, OSError) as exc:
+        _fail(str(exc))
+    console.print(f"[green]Snapshot registered[/green] {instrument.symbol} -> {path}")
+    console.print("Next: [bold]tfx data pull --source stooq[/bold] (reuses the snapshot).")
 
 
 @data_app.command("report")

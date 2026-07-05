@@ -20,6 +20,7 @@ dependencies = [
   "pydantic>=2.7,<3.0",
   "pydantic-settings>=2.3,<3.0",
   "python-dateutil>=2.9",
+  "requests>=2.31,<3.0",
 ]
 
 [project.optional-dependencies]
@@ -44,5 +45,7 @@ select = ["E", "F", "I", "UP", "B", "W"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# network tests are opt-in: `pytest -m network` runs the live-endpoint smoke tests only
+addopts = "-q -m 'not network'"
+markers = ["network: requires internet access to the provider endpoint (opt-in)"]
 filterwarnings = ["error::DeprecationWarning:tfx.*"]

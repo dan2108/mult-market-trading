@@ -1,0 +1,6 @@
+{
+  "sha256": "2663a55fb42d11dec91fa5b0426e589a52e19065e5b068fedf62d83c6918d22d",
+  "stooq_symbol": "^spx",
+  "symbol": "S&P 500",
+  "url": "https://stooq.com/q/d/l/?s=^spx&i=d"
+}

@@ -43,14 +43,20 @@ def pull(
     source: str = "fixture",
     cache_dir: Path | str,
     sample_dir: Path | str | None = None,
+    raw_dir: Path | str | None = None,
+    offline: bool = False,
+    refresh: bool = False,
 ) -> PullResult:
     """Fetch, clean and cache ``symbols`` over ``[start, end]``; write the manifest. Returns the
-    manifest and cache directory. Deterministic for a deterministic source."""
+    manifest and cache directory. Deterministic for a deterministic source (for snapshot-backed
+    remote sources that means: deterministic from a given snapshot)."""
     start, end = _as_date(start), _as_date(end)
     if start > end:
         raise ValueError(f"start {start} is after end {end}")
 
-    src = get_source(source, sample_dir=sample_dir)
+    src = get_source(
+        source, sample_dir=sample_dir, raw_dir=raw_dir, offline=offline, refresh=refresh
+    )
     instruments = [get_instrument(s) for s in symbols]
 
     entries: dict[str, dict] = {}
