@@ -57,11 +57,15 @@ def test_03_calendar_gaps(cache_dir, symbols, window):
     report = build_report(cache_dir, symbols, start, end, max_weekday_gap_days=4)
     for quality in report.instruments:
         assert quality.n_unexpected_gaps == 0, quality.unexpected_runs
-    # no weekend bars stored in any native series
+    # weekend bars only where the asset class actually trades weekends (crypto is 24/7; every
+    # other class must never store a Saturday/Sunday bar)
     for symbol in symbols:
         frame = load_instrument(symbol, start, end, cache_dir=cache_dir)
         weekdays = {ts.weekday() for ts in frame.index}
-        assert 5 not in weekdays and 6 not in weekdays
+        if get_instrument(symbol).weekly_closed_days:
+            assert 5 not in weekdays and 6 not in weekdays
+        else:
+            assert {5, 6} <= weekdays  # a 24/7 instrument must actually cover weekends
     # equity indices have classified holiday gaps
     equities = [q for q in report.instruments if q.asset_class == "equity_index"]
     assert equities and all(q.n_holiday_gaps > 0 for q in equities)
