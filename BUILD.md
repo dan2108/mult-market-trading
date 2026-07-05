@@ -69,7 +69,7 @@ trend-fx/
 
 ## Build order
 
-`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` ✓ → `risk` ✓ → `backtest` ✓ → `validate` (the gate) ✓ → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
+`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` ✓ → `risk` ✓ → `backtest` ✓ → `validate` (the gate) ✓ → `report` ✓ → *(Phase 2: `broker` → `live` → `monitor`)*
 
 > `validate` the *module* is built and green; the **gate run itself** — full basket, real
 > provider data, ~2010→present, pre-set thresholds — has NOT happened yet. Phase 2 stays parked
@@ -226,23 +226,21 @@ not the build — unparks Phase 2.
 
 ---
 
-## Step 8 — `report`
+## Step 8 — `report`  ·  DONE
 
-**Goal:** compute and present the full metric set from a backtest/validate run, and have Claude (research layer — allowed) interpret and flag red flags. Read-only; never feeds back into decisions.
+Delivered: `report.generate(BacktestResult) -> Report` (CAGR, Sharpe, Sortino, max DD +
+duration + time-in-DD, bar-level hit rate / avg win / avg loss, annualized turnover, total
+costs, per-instrument contribution — sums to the total by the engine's accounting identity —
+attribution correlation matrix, gross-exposure stats) plus deterministic markdown rendering
+(`to_markdown`). Stats primitives shared with `validate` (one implementation of Sharpe et al.).
+CLI: `tfx report [--out report.md]`. **Strictly observational:** the package imports nothing
+from `tfx.core` (structurally asserted in tests), mutates nothing, and contains NO LLM call —
+prose interpretation happens outside the module in the research workflow, labelled
+observational, never feeding back into a decision. All 6 acceptance tests + units green,
+anchored by a hand-computed fixture curve (`report_handcalc.md`).
 
-**Scope —** in: metrics (CAGR, Sharpe, Sortino, max DD, time-in-DD, hit rate, avg win/loss, turnover, per-instrument contribution, correlation matrix, exposure-over-time), equity/drawdown plots, an LLM interpretation flagging overfitting/fragility. out: the simulation (consumes output), live, any trade decision.
-
-**Interface:** `report.generate(results) -> metrics + plots + written summary` (LLM prose clearly observational).
-
-**Acceptance tests:**
-1. Each metric matches a hand-computed value on a fixture equity curve (Sharpe, max DD, CAGR, hit rate).
-2. Drawdown correct — peak-to-trough, sign, duration.
-3. Per-instrument contributions sum to the total.
-4. **Numeric metrics deterministic** (LLM prose may vary; numbers must not).
-5. **Read-only:** report has no path that mutates positions/signals — observational only (honours "no LLM in the live path").
-6. Handles edge cases — zero trades, all-losing, single instrument.
-
-**Done:** tests green; metrics validated against a hand-computed fixture; LLM output labelled observational.
+**Open:** plots deferred (numbers are the artifact in v1); per-trade round-trip stats deferred
+(the trade log is deltas, not round trips — revisit with the broker layer).
 
 ---
 

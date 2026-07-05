@@ -7,9 +7,9 @@ real engineering poured into **risk and position sizing** — not the entry. Edg
 and validated*, never chosen because it's popular. Nothing goes live until validation shows
 positive expectancy **out-of-sample, after realistic costs, after a ~50% haircut**.
 
-> Status: **v1 — the gate is built** (`data-pull` ✓ · `costs` ✓ · core ✓ · `backtest` ✓ ·
-> `validate` ✓ · now: `report`, then the real-data gate run). See [BUILD.md](BUILD.md) for the
-> full plan and [CLAUDE.md](CLAUDE.md) for the standing engineering rules.
+> Status: **v1 build complete** (`data-pull` ✓ · `costs` ✓ · core ✓ · `backtest` ✓ ·
+> `validate` ✓ · `report` ✓). Next: **the real-data gate run** — Phase 2 stays parked until it
+> returns PASS. See [BUILD.md](BUILD.md) and [CLAUDE.md](CLAUDE.md) for the standing rules.
 
 ## Why this design
 
@@ -69,4 +69,4 @@ Final list confirmed against the live broker/data source later.
 ## Roadmap
 
 `data-pull` ✓ → `costs` ✓ → core (`signal` ✓ / `sizing` ✓ / `risk` ✓) → `backtest` ✓ →
-`validate` ✓ → `report` → Phase 2 (`broker` → `live` → `monitor`).
+`validate` ✓ → `report` ✓ → **the gate run** → Phase 2 (`broker` → `live` → `monitor`).
