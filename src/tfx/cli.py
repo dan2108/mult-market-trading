@@ -41,6 +41,8 @@ app = typer.Typer(
 )
 data_app = typer.Typer(no_args_is_help=True, help="Data acquisition, caching and quality.")
 app.add_typer(data_app, name="data")
+backtest_app = typer.Typer(no_args_is_help=True, help="Deterministic backtest of the shared core.")
+app.add_typer(backtest_app, name="backtest")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -133,6 +135,50 @@ def data_pull(
         )
     console.print(table)
     console.print("Next: run [bold]tfx data report[/bold] to inspect coverage and gaps.")
+
+
+@backtest_app.command("run")
+def backtest_run(
+    symbols: str | None = typer.Option(
+        None, "--symbols", "-s", help="Comma-separated symbols (default: full basket)."
+    ),
+    start: str = typer.Option(DEFAULT_START, "--start", help="Start date YYYY-MM-DD."),
+    end: str = typer.Option(DEFAULT_END, "--end", help="End date YYYY-MM-DD."),
+    cache_dir: str | None = typer.Option(None, "--cache-dir", help="Override cache dir."),
+) -> None:
+    """Run the bar-by-bar backtest on the cached panel (default core params).
+
+    Research output only -- the honest verdict on an edge comes from `tfx validate`, never from
+    a single backtest run.
+    """
+    from .backtest import run as run_backtest
+    from .data.loader import load
+
+    settings = get_settings()
+    syms = _parse_symbols(symbols)
+    cdir = cache_dir or settings.cache_dir
+
+    try:
+        panel = load(syms, start, end, cache_dir=cdir)
+        result = run_backtest(panel)
+    except (DataError, FileNotFoundError, KeyError, ValueError) as exc:
+        _fail(str(exc))
+
+    equity = result.equity_curve
+    drawdown = (equity / equity.cummax() - 1.0).min()
+    total_costs = result.costs["amount"].sum() if len(result.costs) else 0.0
+    table = Table(title=f"Backtest  {start} to {end}  ({len(syms)} instruments)")
+    for col in ("Bars", "Trades", "Final equity", "Total return", "Max drawdown", "Costs paid"):
+        table.add_column(col)
+    table.add_row(
+        str(len(equity)), str(len(result.trades)), f"{equity.iloc[-1]:.4f}",
+        f"{equity.iloc[-1] - 1.0:+.2%}", f"{drawdown:.2%}", f"{total_costs:.4%}",
+    )
+    console.print(table)
+    console.print(
+        "[dim]Provisional params; costs pessimistic. The gate is [bold]tfx validate[/bold], "
+        "not this table.[/dim]"
+    )
 
 
 @data_app.command("report")
