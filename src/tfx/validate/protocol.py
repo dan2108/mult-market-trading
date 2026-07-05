@@ -1,0 +1,71 @@
+"""The pre-registered protocol: grid, fold geometry, haircut, and pass thresholds.
+
+Everything that could move a goalpost lives HERE, in one frozen object, constructed before the
+run and echoed verbatim into the result. The grid is deliberately tiny: `lookbacks` (where
+ensemble-vs-single gets *evidenced*) x `ewma_halflife`. `target_vol` and the leverage cap are
+scaling policy, not edge, and ALL risk limits are guardrails -- none of them are ever swept or
+fit (a guardrail tuned to the data is not a guardrail).
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class Verdict(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    FRAGILE = "fragile"                          # thresholds met, but the edge is a knife-edge
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+
+class GridPoint(BaseModel):
+    """One pre-registered candidate: the only two swept dimensions in v1."""
+
+    model_config = ConfigDict(frozen=True)
+
+    lookbacks: tuple[int, ...]
+    ewma_halflife: float = Field(gt=0)
+
+    def label(self) -> str:
+        inner = ",".join(str(lb) for lb in self.lookbacks)
+        return f"lb=({inner}) hl={self.ewma_halflife:g}"
+
+
+# The default pre-registered grid: 6 lookback sets (four singles + two ensembles, so the sweep
+# itself decides ensemble-vs-single) x 3 vol halflives = 18 candidates. PROVISIONAL like every
+# other default -- but changing it after seeing results is exactly what the echo prevents.
+DEFAULT_GRID: tuple[GridPoint, ...] = tuple(
+    GridPoint(lookbacks=lookbacks, ewma_halflife=halflife)
+    for lookbacks in (
+        (21,), (63,), (126,), (252,), (63, 126, 252), (21, 63, 126, 252),
+    )
+    for halflife in (10.0, 20.0, 60.0)
+)
+
+
+class ValidateProtocol(BaseModel):
+    """Frozen before the run; echoed verbatim into the result. No moving goalposts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    # rolling walk-forward geometry, in bars (~4y train / 1y test / 1y step on daily data)
+    train_bars: int = Field(default=1008, gt=0)
+    test_bars: int = Field(default=252, gt=0)
+    step_bars: int = Field(default=252, gt=0)
+    min_folds: int = Field(default=3, gt=0)
+
+    grid: tuple[GridPoint, ...] = DEFAULT_GRID
+
+    # the honesty devices
+    haircut: float = Field(default=0.5, gt=0, le=1)      # thresholds apply to haircut numbers
+    min_sharpe_after_haircut: float = Field(default=0.5)
+    min_tstat: float = Field(default=2.0)
+    min_trades: int = Field(default=100, gt=0)
+
+    # robustness: the modal winning candidate must be selected in at least this share of folds,
+    # and the mean OOS Sharpe across the WHOLE grid must be positive (the edge can't live in
+    # one lucky cell)
+    min_modal_share: float = Field(default=0.5, gt=0, le=1)

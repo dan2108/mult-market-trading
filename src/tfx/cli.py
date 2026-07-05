@@ -43,6 +43,8 @@ data_app = typer.Typer(no_args_is_help=True, help="Data acquisition, caching and
 app.add_typer(data_app, name="data")
 backtest_app = typer.Typer(no_args_is_help=True, help="Deterministic backtest of the shared core.")
 app.add_typer(backtest_app, name="backtest")
+validate_app = typer.Typer(no_args_is_help=True, help="THE GATE: walk-forward OOS validation.")
+app.add_typer(validate_app, name="validate")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -179,6 +181,72 @@ def backtest_run(
         "[dim]Provisional params; costs pessimistic. The gate is [bold]tfx validate[/bold], "
         "not this table.[/dim]"
     )
+
+
+@validate_app.command("run")
+def validate_run(
+    symbols: str | None = typer.Option(
+        None, "--symbols", "-s", help="Comma-separated symbols (default: full basket)."
+    ),
+    start: str = typer.Option(DEFAULT_START, "--start", help="Start date YYYY-MM-DD."),
+    end: str = typer.Option(DEFAULT_END, "--end", help="End date YYYY-MM-DD."),
+    cache_dir: str | None = typer.Option(None, "--cache-dir", help="Override cache dir."),
+    train_bars: int = typer.Option(1008, "--train-bars", help="Train window, bars (~4y)."),
+    test_bars: int = typer.Option(252, "--test-bars", help="Test window, bars (~1y)."),
+    step_bars: int = typer.Option(252, "--step-bars", help="Roll step, bars."),
+) -> None:
+    """Run the walk-forward gate on the cached panel. Exit code 0 ONLY on a PASS verdict.
+
+    Thresholds and the parameter grid are pre-registered in ValidateProtocol and echoed into
+    the result -- change them BEFORE a run, never after seeing numbers.
+    """
+    from .data.loader import load
+    from .validate import ValidateProtocol, Verdict
+    from .validate import run as run_validate
+
+    settings = get_settings()
+    syms = _parse_symbols(symbols)
+    cdir = cache_dir or settings.cache_dir
+    protocol = ValidateProtocol(train_bars=train_bars, test_bars=test_bars, step_bars=step_bars)
+
+    try:
+        panel = load(syms, start, end, cache_dir=cdir)
+        result = run_validate(panel, protocol)
+    except (DataError, FileNotFoundError, KeyError, ValueError) as exc:
+        _fail(str(exc))
+
+    table = Table(title=f"Walk-forward folds  ({len(result.folds)})")
+    for col in ("Fold", "Test window", "Selected", "Train SR", "Test SR", "Trades"):
+        table.add_column(col)
+    for fold in result.folds:
+        table.add_row(
+            str(fold.fold),
+            f"{fold.test_start.date()} .. {fold.test_end.date()}",
+            fold.selected.label(),
+            f"{fold.train_sharpe:.2f}", f"{fold.test_sharpe:.2f}", str(fold.test_trades),
+        )
+    console.print(table)
+
+    metrics = result.oos_metrics
+    console.print(
+        f"OOS: {metrics['n_bars']} bars, {metrics['n_trades']} trades | "
+        f"Sharpe raw {metrics['sharpe_raw']:.2f} -> haircut "
+        f"[bold]{metrics['sharpe_haircut']:.2f}[/bold] "
+        f"(min {result.protocol.min_sharpe_after_haircut:g}) | "
+        f"t-stat {metrics['t_stat']:.2f} (min {result.protocol.min_tstat:g}) | "
+        f"maxDD {metrics['max_drawdown']:.1%} | DSR {metrics['deflated_sharpe']:.3f}"
+    )
+    robustness = result.robustness
+    console.print(
+        f"Robustness: modal {robustness['modal_candidate']} in "
+        f"{robustness['modal_share']:.0%} of folds; grid-mean OOS Sharpe "
+        f"{robustness['grid_mean_oos_sharpe']:.2f}"
+    )
+    if result.verdict is Verdict.PASS:
+        console.print("[green]VERDICT: PASS[/green]")
+    else:
+        err_console.print(f"[red]VERDICT: {result.verdict.value.upper()}[/red]")
+        raise typer.Exit(code=1)
 
 
 @data_app.command("report")
