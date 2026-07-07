@@ -191,15 +191,29 @@ def validate_run(
     start: str = typer.Option(DEFAULT_START, "--start", help="Start date YYYY-MM-DD."),
     end: str = typer.Option(DEFAULT_END, "--end", help="End date YYYY-MM-DD."),
     cache_dir: str | None = typer.Option(None, "--cache-dir", help="Override cache dir."),
-    train_bars: int = typer.Option(1008, "--train-bars", help="Train window, bars (~4y)."),
-    test_bars: int = typer.Option(252, "--test-bars", help="Test window, bars (~1y)."),
-    step_bars: int = typer.Option(252, "--step-bars", help="Roll step, bars."),
+    train_bars: int | None = typer.Option(
+        None, "--train-bars",
+        help="Override the pre-registered train window (bars). Marks the run NON-CANONICAL.",
+    ),
+    test_bars: int | None = typer.Option(
+        None, "--test-bars",
+        help="Override the pre-registered test window (bars). Marks the run NON-CANONICAL.",
+    ),
+    step_bars: int | None = typer.Option(
+        None, "--step-bars",
+        help="Override the pre-registered roll step (bars). Marks the run NON-CANONICAL.",
+    ),
 ) -> None:
     """Run the walk-forward gate on the cached panel. Exit code 0 ONLY on a PASS verdict.
 
     Thresholds and the parameter grid are pre-registered in ValidateProtocol and echoed into
-    the result -- change them BEFORE a run, never after seeing numbers.
+    the result -- change them BEFORE a run, never after seeing numbers. The fold-geometry flags
+    exist for research/exploration; overriding any of them marks the run NON-CANONICAL in the
+    output, loudly, so re-running with different geometry until one happens to PASS can't be
+    mistaken for -- or quietly reported as -- the pre-registered gate result.
     """
+    from pydantic import ValidationError
+
     from .data.loader import load
     from .validate import ValidateProtocol, Verdict
     from .validate import run as run_validate
@@ -207,13 +221,34 @@ def validate_run(
     settings = get_settings()
     syms = _parse_symbols(symbols)
     cdir = cache_dir or settings.cache_dir
-    protocol = ValidateProtocol(train_bars=train_bars, test_bars=test_bars, step_bars=step_bars)
 
     try:
+        default_protocol = ValidateProtocol()
+        protocol = ValidateProtocol(
+            train_bars=train_bars if train_bars is not None else default_protocol.train_bars,
+            test_bars=test_bars if test_bars is not None else default_protocol.test_bars,
+            step_bars=step_bars if step_bars is not None else default_protocol.step_bars,
+        )
+        is_canonical = protocol == default_protocol
         panel = load(syms, start, end, cache_dir=cdir)
         result = run_validate(panel, protocol)
-    except (DataError, FileNotFoundError, KeyError, ValueError) as exc:
+    except (DataError, FileNotFoundError, KeyError, ValueError, ValidationError) as exc:
         _fail(str(exc))
+
+    override_note = (
+        "" if is_canonical else "  [yellow]<- OVERRIDDEN, not the pre-registered default[/yellow]"
+    )
+    console.print(
+        f"Geometry: train={protocol.train_bars} test={protocol.test_bars} "
+        f"step={protocol.step_bars} bars" + override_note
+    )
+    if not is_canonical:
+        err_console.print(
+            "[yellow]NON-CANONICAL RUN[/yellow]: fold geometry differs from "
+            "ValidateProtocol()'s pre-registered default. This verdict is exploratory -- "
+            "re-registering the gate's real geometry means changing ValidateProtocol's "
+            "defaults, not passing CLI flags until one run passes."
+        )
 
     table = Table(title=f"Walk-forward folds  ({len(result.folds)})")
     for col in ("Fold", "Test window", "Selected", "Train SR", "Test SR", "Trades"):
@@ -242,10 +277,11 @@ def validate_run(
         f"{robustness['modal_share']:.0%} of folds; grid-mean OOS Sharpe "
         f"{robustness['grid_mean_oos_sharpe']:.2f}"
     )
+    canonical_note = "" if is_canonical else " [yellow](NON-CANONICAL -- exploratory)[/yellow]"
     if result.verdict is Verdict.PASS:
-        console.print("[green]VERDICT: PASS[/green]")
+        console.print(f"[green]VERDICT: PASS[/green]{canonical_note}")
     else:
-        err_console.print(f"[red]VERDICT: {result.verdict.value.upper()}[/red]")
+        err_console.print(f"[red]VERDICT: {result.verdict.value.upper()}[/red]{canonical_note}")
         raise typer.Exit(code=1)
 
 

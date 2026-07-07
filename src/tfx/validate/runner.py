@@ -2,10 +2,29 @@
 score on TEST only; stitch the out-of-sample record; apply haircut, significance and robustness;
 return the verdict.
 
-One backtest per (fold, candidate) covers [train_start, test_end): the train-portion scores are
-identical to a train-only run because the engine is prefix-invariant (its cardinal no-look-ahead
-property, proven in its own acceptance tests), so scoring the prefix leaks nothing from the test
-window into selection. Selection ties break by pre-registered grid order -- deterministic.
+TWO backtests per (fold, candidate), not one combined run:
+
+1. Selection: a standalone run over [train_start, test_start). Equivalent to scoring the
+   train-prefix of a combined [train_start, test_end) run (the engine is prefix-invariant -- its
+   cardinal no-look-ahead property, proven in its own acceptance tests -- so a standalone
+   train-only run produces bit-identical bars over that range), but needs no test-window data at
+   all and no post-hoc slicing. Selection trims each candidate's OWN warm-up prefix before
+   scoring Sharpe (`GridPoint.warmup_bars()`): a longer lookback/halflife means more exact-zero
+   warm-up bars, and including them dilutes Sharpe toward zero by roughly sqrt(active_fraction)
+   -- a structural bias toward short-horizon candidates that has nothing to do with which one
+   actually trades better.
+
+2. OOS scoring: a FRESH run starting `train_bars` before test_start (the protocol guarantees
+   every candidate's warm-up fits inside that buffer) through test_end, using only the
+   [test_start, test_end) portion of ITS OWN output. This is deliberately NOT the same backtest
+   selection used -- a single run spanning train into test lets drawdown accumulated during
+   TRAINING carry into the test window's equity/peak, so the halt (or its absence) reflects
+   training-era history a genuinely fresh deployment at test_start would never have seen. Every
+   candidate gets this fresh run (not just the fold's eventual winner), because the same
+   contamination would otherwise sit inside `per_candidate_oos` -- the robustness check's own
+   evidence that the edge isn't a single lucky cell.
+
+Selection ties break by pre-registered grid order -- deterministic.
 """
 
 from __future__ import annotations
@@ -71,6 +90,18 @@ def _score(value: float) -> float:
     return -math.inf if math.isnan(value) else value
 
 
+def _active_returns(equity: pd.Series, point: GridPoint) -> pd.Series:
+    """Daily returns of an equity curve, excluding this candidate's own warm-up prefix (exact
+    zero-return bars, since no position exists yet). See module docstring for why including
+    warm-up in a cross-candidate Sharpe comparison is a structural bias, not a neutral choice."""
+    returns = daily_returns(equity)
+    warmup = point.warmup_bars()
+    if warmup >= len(equity.index):
+        return returns.iloc[0:0]
+    cutoff = equity.index[warmup]
+    return returns[returns.index >= cutoff]
+
+
 def _robustness(
     selected: list[GridPoint], per_candidate_oos: dict[str, float], protocol: ValidateProtocol
 ) -> dict:
@@ -126,21 +157,35 @@ def run(
     oos_trades = 0
     per_candidate_pieces: dict[str, list[pd.Series]] = {p.label(): [] for p in protocol.grid}
 
+    # Small safety margin beyond a candidate's own warm-up: keeps the first scored OOS bar's
+    # return comfortably past the exact bar the candidate's first real decision appears on.
+    oos_buffer_margin_bars = 5
+
     for fold in fold_list:
-        window = panel.iloc[fold.train_start : fold.test_end]
-        test_index = index[fold.test_start : fold.test_end]
+        train_window = panel.iloc[fold.train_start : fold.test_start]
+        test_start_ts = index[fold.test_start]
 
         best: tuple[float, GridPoint, pd.Series, int] | None = None
         for point in protocol.grid:
-            result = run_backtest(window, _backtest_params(point), cost_model)
-            returns = daily_returns(result.equity_curve)
-            train_returns = returns[returns.index < test_index[0]]
-            test_returns = returns[returns.index >= test_index[0]]
+            train_result = run_backtest(train_window, _backtest_params(point), cost_model)
+            train_returns = _active_returns(train_result.equity_curve, point)
+            score = _score(sharpe(train_returns))
+
+            # Fresh OOS run: starts only `warmup_bars` before test_start -- NOT at train_start
+            # -- so equity/peak/drawdown-halt state at test_start reflects a genuine fresh
+            # deployment. During the buffer itself the candidate has no real decision yet (that
+            # is what "warm-up" means), so the position stays flat and equity stays at
+            # initial_equity right up to test_start: the (potentially much longer) training
+            # period's drawdown history never enters this run's account state at all.
+            buffer_bars = point.warmup_bars() + oos_buffer_margin_bars
+            oos_window = panel.iloc[max(0, fold.test_start - buffer_bars) : fold.test_end]
+            oos_result = run_backtest(oos_window, _backtest_params(point), cost_model)
+            oos_returns_full = daily_returns(oos_result.equity_curve)
+            test_returns = oos_returns_full[oos_returns_full.index >= test_start_ts]
             per_candidate_pieces[point.label()].append(test_returns)
 
-            score = _score(sharpe(train_returns))
             if best is None or score > best[0]:  # strict >: ties keep earlier grid order
-                n_test_trades = int((result.trades["timestamp"] >= test_index[0]).sum())
+                n_test_trades = int((oos_result.trades["timestamp"] >= test_start_ts).sum())
                 best = (score, point, test_returns, n_test_trades)
 
         train_score, point, test_returns, n_test_trades = best

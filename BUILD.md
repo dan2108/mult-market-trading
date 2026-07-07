@@ -196,15 +196,24 @@ next-bar-open variant is a possible later refinement, strictly behind the gate.
 
 Delivered: rolling walk-forward behind `validate.run(panel, protocol, cost_model) ->
 ValidateResult` with verdict ∈ {PASS, FAIL, FRAGILE, INSUFFICIENT_EVIDENCE}; CLI `tfx validate
-run` exits 0 only on PASS. **Geometry:** train 1008 bars (~4y) / test 252 / step 252, rolling —
-parameters fit on train only; one backtest per (fold, candidate) spans train+test and the train
-prefix scores selection (valid because the engine is prefix-invariant — its proven no-look-ahead
-property). **Pre-registered grid (18):** `lookbacks` ∈ {four singles, two ensembles — the sweep
-itself decides ensemble-vs-single} × `ewma_halflife` ∈ {10, 20, 60}. `target_vol`, leverage cap
-and ALL risk limits are held fixed (policy, never fit). **Honesty devices:** thresholds live in
-one frozen `ValidateProtocol` echoed verbatim into the result (no moving goalposts); the ~50%
-haircut applies to the numbers the thresholds see; significance = t-stat ≥ 2 + minimum trade
-count (else INSUFFICIENT_EVIDENCE); Deflated Sharpe (Bailey–López de Prado closed form,
+run` exits 0 only on PASS. **Geometry:** train 1008 bars (~4y) / test 252 / step 252, rolling.
+**Two backtests per (fold, candidate), not one combined run:** selection is a standalone
+train-only run scored on its OWN active bars only (`GridPoint.warmup_bars()` trims each
+candidate's warm-up prefix before scoring Sharpe — untrimmed, a longer lookback/halflife dilutes
+Sharpe toward zero and structurally favors short horizons); OOS scoring is a FRESH run starting
+only `warmup_bars() + 5` bars before test_start, never train_start — so a genuinely severe
+in-training drawdown can't inflate the peak an OOS-window halt is measured against, and every
+candidate (not just the fold's winner) gets this fresh run so the robustness check's
+cross-candidate comparison stays apples-to-apples. `ValidateProtocol` validates at construction
+that the grid's worst-case warm-up actually fits inside `train_bars` — without it, selection
+would silently fall back to grid order with an undefined score. **Pre-registered grid (18):**
+`lookbacks` ∈ {four singles, two ensembles — the sweep itself decides ensemble-vs-single} ×
+`ewma_halflife` ∈ {10, 20, 60}. `target_vol`, leverage cap and ALL risk limits are held fixed
+(policy, never fit). **Honesty devices:** thresholds live in one frozen `ValidateProtocol`
+echoed verbatim into the result (no moving goalposts — the CLI's fold-geometry override flags
+exist for research only and mark any run that uses them NON-CANONICAL, loudly, in the output);
+the ~50% haircut applies to the numbers the thresholds see; significance = t-stat ≥ 2 + minimum
+trade count (else INSUFFICIENT_EVIDENCE); Deflated Sharpe (Bailey–López de Prado closed form,
 n_trials = grid size, stdlib NormalDist — deterministic, no bootstrap) reported; robustness =
 modal winner in ≥ half the folds AND grid-mean OOS Sharpe > 0, else FRAGILE. All 9 acceptance
 tests + units green — including the two-sided sanity pair on seeded synthetic processes:

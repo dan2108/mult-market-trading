@@ -62,7 +62,12 @@ def test_01_fold_separation_no_leakage():
 
 # 2 — Walk-forward correctness: windows roll forward only; no fold sees its own future.
 def test_02_windows_roll_forward_only():
-    fold_list = folds(500, ValidateProtocol(train_bars=120, test_bars=60, step_bars=60))
+    # pure geometry test: needs a small grid so 120 train_bars clears the warm-up-fit validator
+    # (the default grid's 252-bar lookback would legitimately reject a 120-bar train window).
+    small_grid = (GridPoint(lookbacks=(5,), ewma_halflife=10.0),)
+    fold_list = folds(
+        500, ValidateProtocol(train_bars=120, test_bars=60, step_bars=60, grid=small_grid)
+    )
     assert [f.fold for f in fold_list] == list(range(len(fold_list)))
     for previous, current in zip(fold_list, fold_list[1:], strict=False):
         assert current.test_start == previous.test_start + 60
@@ -186,8 +191,61 @@ def test_09_thresholds_frozen_echoed_and_run_deterministic():
 
 # --- additional unit tests -------------------------------------------------------------------
 def test_folds_too_short_history_raises():
+    # a small custom grid so construction itself clears the warm-up-fit validator; the point of
+    # THIS test is folds()'s own min_folds enforcement, not protocol construction.
+    small_grid = (GridPoint(lookbacks=(5,), ewma_halflife=5.0),)
+    protocol = ValidateProtocol(
+        train_bars=120, test_bars=60, step_bars=60, min_folds=3, grid=small_grid
+    )
     with pytest.raises(ValueError, match="fold"):
-        folds(200, ValidateProtocol(train_bars=120, test_bars=60, step_bars=60, min_folds=3))
+        folds(200, protocol)  # only 200 bars: room for a single fold, not 3
+
+
+def test_protocol_rejects_warmup_that_does_not_fit_train_bars():
+    """Regression: constructing a protocol whose grid's warm-up exceeds train_bars must fail
+    LOUDLY at construction, not silently let selection fall back to grid order with an
+    undefined (NaN) train Sharpe for every affected candidate."""
+    too_small = GridPoint(lookbacks=(300,), ewma_halflife=10.0)
+    with pytest.raises(ValidationError, match="warm-up"):
+        ValidateProtocol(train_bars=120, grid=(too_small,))
+
+    # right at the boundary: warmup + MIN_ACTIVE_TRAIN_BARS == train_bars is exactly enough
+    # (inclusive); one bar short of that must still fail.
+    from tfx.validate.protocol import MIN_ACTIVE_TRAIN_BARS
+
+    exact = GridPoint(lookbacks=(50,), ewma_halflife=10.0)  # warmup_bars() == 50
+    ValidateProtocol(train_bars=50 + MIN_ACTIVE_TRAIN_BARS, grid=(exact,))  # exactly enough
+    with pytest.raises(ValidationError):
+        ValidateProtocol(train_bars=50 + MIN_ACTIVE_TRAIN_BARS - 1, grid=(exact,))
+
+
+def test_active_returns_trims_candidate_specific_warmup():
+    """The warm-up-trim fix for selection bias: a candidate's own warmup_bars() worth of
+    exact-zero (flat, no position) prefix must be excluded before scoring Sharpe, and a longer
+    warm-up must not silently keep more zero bars than a shorter one."""
+    from tfx.validate.runner import _active_returns
+
+    index = pd.date_range("2024-01-01", periods=25, freq="B", tz="UTC")
+    # flat through index 9 (10 bars: the return AT index i is 0.0 for i in 1..9, since every
+    # bar up to and including index 9 is the same price); real movement from index 10 on.
+    values = [1.0] * 10 + [1.0 * 1.01**i for i in range(1, 16)]
+    equity = pd.Series(values, index=index)
+
+    short = GridPoint(lookbacks=(2,), ewma_halflife=2.0)   # warmup_bars() == 2
+    long = GridPoint(lookbacks=(9,), ewma_halflife=2.0)    # warmup_bars() == 9
+
+    short_active = _active_returns(equity, short)
+    long_active = _active_returns(equity, long)
+
+    assert len(long_active) < len(short_active)  # longer warm-up -> fewer active bars kept
+    assert short_active.index[0] == index[short.warmup_bars()]
+    assert long_active.index[0] == index[long.warmup_bars()]
+    # short's cutoff (index 2) is still deep in the flat region -- confirms the flat region is
+    # long enough that neither candidate's cutoff accidentally lands past it into real bars.
+    assert (short_active.iloc[: long.warmup_bars() - short.warmup_bars() - 1] == 0.0).all()
+    # long's cutoff (index 9, the LAST flat bar) is comfortably past by the time real returns
+    # start at index 10 -- no residual flat zeros beyond that one boundary bar.
+    assert not (long_active.iloc[1:] == 0.0).any()
 
 
 def test_stitch_rejects_overlap():
@@ -244,3 +302,62 @@ def test_verdict_ordering_thresholds_before_robustness():
     failing = {"n_trades": 1000, "sharpe_haircut": 0.1, "t_stat": 0.5}
     # a result that fails thresholds is FAIL even if it is also fragile
     assert _verdict(failing, {"fragile": True}, PROTOCOL) is Verdict.FAIL
+
+
+# Regression: OOS scoring must not inherit drawdown/peak history accumulated during TRAINING.
+# A single backtest spanning train into test lets a severe in-training peak inflate the
+# reference every OOS-window drawdown check is measured against -- a genuine fresh deployment
+# at test_start would never have seen that peak. The fix runs OOS scoring from a fresh buffer
+# (just enough bars before test_start for warm-up), not from train_start.
+def test_oos_run_does_not_inherit_training_period_peak():
+    import numpy as np
+
+    from tfx.validate.runner import _backtest_params
+
+    point = GridPoint(lookbacks=(21,), ewma_halflife=10.0)
+    params = _backtest_params(point)
+
+    rng = np.random.default_rng(3)
+    n_train, n_test = 300, 100
+    train_a = np.concatenate([
+        100 * np.exp(np.cumsum(rng.normal(0.004, 0.01, 150))),
+    ])
+    train_a = np.concatenate(
+        [train_a, train_a[-1] * np.exp(np.cumsum(rng.normal(-0.02, 0.01, 150)))]
+    )
+    train_b = 50 * np.exp(np.cumsum(rng.normal(0.0, 0.008, n_train)))
+    test_a = train_a[-1] * np.exp(np.cumsum(rng.normal(0.001, 0.005, n_test)))
+    test_b = train_b[-1] * np.exp(np.cumsum(rng.normal(0.001, 0.005, n_test)))
+    panel = panel_from_closes({
+        "EUR/USD": np.concatenate([train_a, test_a]),
+        "Gold": np.concatenate([train_b, test_b]),
+    })
+
+    test_start = n_train
+    test_ts = panel.index[test_start]
+    buffer_bars = point.warmup_bars() + 5
+
+    from tfx.backtest import run as run_backtest
+
+    combined = run_backtest(panel, params)  # the OLD (buggy) approach: one run, train->test
+    fresh_window = panel.iloc[max(0, test_start - buffer_bars) :]
+    fresh = run_backtest(fresh_window, params)  # the FIX: buffer-only run
+
+    combined_peak = combined.equity_curve.loc[combined.equity_curve.index < test_ts].max()
+    fresh_peak = fresh.equity_curve.loc[fresh.equity_curve.index < test_ts].max()
+
+    # THE regression check: the combined run's pre-test peak reflects the FULL training
+    # history's high-water mark; the fresh run's pre-test peak reflects only the short warm-up
+    # buffer, close to 1.0. If these two aren't meaningfully different, this test proves nothing.
+    assert combined_peak > fresh_peak * 1.5
+    assert fresh_peak == pytest.approx(1.0, abs=0.1)
+
+
+def test_oos_buffer_uses_each_candidates_own_warmup_not_train_bars():
+    """The OOS buffer must scale with the CANDIDATE's own warm-up, not the full train_bars --
+    otherwise it reduces to the same (buggy) train-start-to-test-end span for every candidate."""
+    short = GridPoint(lookbacks=(5,), ewma_halflife=5.0)
+    long = GridPoint(lookbacks=(100,), ewma_halflife=50.0)
+    assert short.warmup_bars() < long.warmup_bars()
+    # neither is anywhere near train_bars=1008 (the old, wrong buffer size)
+    assert long.warmup_bars() + 5 < 200

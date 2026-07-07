@@ -9,9 +9,10 @@ fit (a guardrail tuned to the data is not a guardrail).
 
 from __future__ import annotations
 
+import math
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Verdict(StrEnum):
@@ -33,6 +34,14 @@ class GridPoint(BaseModel):
         inner = ",".join(str(lb) for lb in self.lookbacks)
         return f"lb=({inner}) hl={self.ewma_halflife:g}"
 
+    def warmup_bars(self) -> int:
+        """Bars before this candidate can produce its first real decision: signal needs
+        `max(lookbacks)` bars for its longest anchor, sizing needs `ceil(ewma_halflife)` valid
+        return observations for its covariance to burn in -- both run over the SAME timeline in
+        parallel (not sequentially), so the bar their overlap first has a real weight is the
+        MAX of the two, not their sum."""
+        return max(max(self.lookbacks), math.ceil(self.ewma_halflife))
+
 
 # The default pre-registered grid: 6 lookback sets (four singles + two ensembles, so the sweep
 # itself decides ensemble-vs-single) x 3 vol halflives = 18 candidates. PROVISIONAL like every
@@ -44,6 +53,14 @@ DEFAULT_GRID: tuple[GridPoint, ...] = tuple(
     )
     for halflife in (10.0, 20.0, 60.0)
 )
+
+
+# Minimum active (post-warm-up) train bars every grid candidate must have room to score a
+# Sharpe over. Without this, a candidate whose warm-up consumes the whole train window gets an
+# undefined (NaN) train score, which the runner's max-score selection has no honest way to
+# handle -- it would silently fall back to grid order (the FIRST candidate wins by position, not
+# evidence), and a gate built on that can return a verdict with zero real selection behind it.
+MIN_ACTIVE_TRAIN_BARS = 10
 
 
 class ValidateProtocol(BaseModel):
@@ -69,3 +86,17 @@ class ValidateProtocol(BaseModel):
     # and the mean OOS Sharpe across the WHOLE grid must be positive (the edge can't live in
     # one lucky cell)
     min_modal_share: float = Field(default=0.5, gt=0, le=1)
+
+    @model_validator(mode="after")
+    def _warmup_fits_train_window(self) -> ValidateProtocol:
+        worst_case_warmup = max(point.warmup_bars() for point in self.grid)
+        if worst_case_warmup + MIN_ACTIVE_TRAIN_BARS > self.train_bars:
+            raise ValueError(
+                f"train_bars={self.train_bars} cannot fit the grid's worst-case warm-up "
+                f"({worst_case_warmup} bars: max(max(lookbacks), ceil(ewma_halflife)) over the "
+                f"grid) plus a minimum {MIN_ACTIVE_TRAIN_BARS} active bars to score a train "
+                f"Sharpe on. Without this, selection silently falls back to grid order with an "
+                f"undefined score for the offending candidate(s) -- increase train_bars, or "
+                f"shrink the grid's lookbacks/ewma_halflife."
+            )
+        return self
