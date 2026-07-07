@@ -28,10 +28,13 @@ from tfx.data.schema import TIMESTAMP_INDEX_NAME, QualityFlag
 def _panel(
     closes: dict[str, list[float]], pad: dict[str, set[int]] | None = None
 ) -> pd.DataFrame:
-    """A minimal (close, quality) panel, shaped exactly like `align()`'s output."""
+    """A minimal (close, quality) panel, shaped exactly like `align()`'s output. Business-day
+    frequency (no weekend rows): these fixtures represent a weekday-only basket, so `size()`
+    annualizes with the standard 252 convention -- matching sizing_handcalc.md's model spec and
+    every oracle's hardcoded `* 252.0` below."""
     pad = pad or {}
     n = len(next(iter(closes.values())))
-    index = pd.date_range("2024-01-01", periods=n, freq="D", tz="UTC", name=TIMESTAMP_INDEX_NAME)
+    index = pd.date_range("2024-01-01", periods=n, freq="B", tz="UTC", name=TIMESTAMP_INDEX_NAME)
     frames = {}
     for symbol, values in closes.items():
         padded = pad.get(symbol, set())
@@ -212,7 +215,81 @@ def test_08_handcomputed_fixture_slice():
     np.testing.assert_allclose(weight.to_numpy(), expected, rtol=1e-9, equal_nan=True)
 
 
+def _reference_masked_cov(prices: dict[str, list[float]], halflife: float) -> np.ndarray:
+    """Independent (non-tfx.core.sizing) EWMA covariance recursion with PER-PAIR masking: a
+    bar where instrument B has no return updates only the (live x live) block, leaving every
+    entry touching B on hold -- never the whole matrix. This is the FIXED spec (contrast with
+    `_reference_annualized_cov` above, which is the pre-fix all-or-nothing recursion, kept as a
+    regression oracle proving the two diverge on a padded panel)."""
+    close = pd.DataFrame(prices)
+    log_returns = np.log(close / close.shift(1)).to_numpy()
+    lam = 0.5 ** (1.0 / halflife)
+    n_bars, k = close.shape
+    cov = np.zeros((k, k))
+    out = np.full((n_bars, k, k), np.nan)
+    for t in range(n_bars):
+        r = log_returns[t]
+        live = ~np.isnan(r)
+        if live.any():
+            idx = np.where(live)[0]
+            block = np.outer(r[idx], r[idx])
+            cov[np.ix_(idx, idx)] = lam * cov[np.ix_(idx, idx)] + (1.0 - lam) * block
+        out[t] = cov * 252.0
+    return out
+
+
 # --- additional unit tests -------------------------------------------------------------------
+def test_holiday_pad_does_not_freeze_other_instruments_covariance():
+    """Regression for the all-or-nothing covariance bug: instrument B's price pad (and its
+    unavoidably-NaN reopen-bar return) must not freeze instrument A's covariance/vol estimate
+    for those bars. A's own diagonal must keep accumulating A's real returns throughout.
+
+    Bar 5 is B's pad: B is untradable (NaN weight); A is sized alone (only usable instrument).
+    Bar 6 is B's "reopen" -- B's CLOSE is real (tradable) even though its RETURN is undefined
+    (shift(1) lands on the pad), so B stays in the usable set sized off its stale, frozen-since
+    -bar-4 vol/cross-covariance, alongside A's freshly-updated one. Bar 7 onward both are fully
+    live again."""
+    a = [100.0, 102, 104, 101, 105, 103, 106, 108]
+    b_full = [100.0, 99, 103, 98, 102, 97, 101, 96]
+    panel = _panel({"A": a, "B": b_full}, pad={"B": {5}})
+    directions = pd.DataFrame(1.0, index=panel.index, columns=["A", "B"])
+    params = SizingParams(ewma_halflife=2.0, leverage_cap=100.0)
+
+    weight = size(panel, directions, params)
+
+    b_padded = [v if i != 5 else float("nan") for i, v in enumerate(b_full)]
+    fixed_cov = _reference_masked_cov({"A": a, "B": b_padded}, halflife=2.0)
+    buggy_cov = _reference_annualized_cov({"A": a, "B": b_padded}, halflife=2.0)
+
+    # THE regression check: by bar 6, the pre-fix whole-matrix gate has been frozen since bar 4
+    # (B's return is NaN at both 5 and 6) and cannot see A's real bars-5-and-6 returns; the
+    # fixed, per-pair-masked recursion keeps updating A's own diagonal throughout. The two
+    # oracles must disagree on A's own variance, or this test isn't exercising the bug at all.
+    assert not np.isclose(fixed_cov[6][0, 0], buggy_cov[6][0, 0])
+
+    # B itself is untradable at the pad (NaN weight); A must be sized normally that same bar --
+    # its own vol never froze just because B is unavailable.
+    assert pd.isna(weight["B"].iloc[5])
+    assert not pd.isna(weight["A"].iloc[5])
+    # B is tradable again at the reopen (real close), sized off its stale vol -- not NaN.
+    assert not pd.isna(weight["B"].iloc[6])
+
+    # bar 5: A is the ONLY usable instrument (B untradable that bar).
+    vol_a_5 = math.sqrt(fixed_cov[5][0, 0])
+    assert weight["A"].iloc[5] == pytest.approx(params.target_vol / vol_a_5, rel=1e-9)
+
+    # bars 6-7: both usable -- the real size() output matches the FIXED oracle's full 2x2
+    # quadratic form (bar 6 uses B's stale, frozen-since-bar-4 vol/cross-term; bar 7 is fresh).
+    for t in (6, 7):
+        sigma = fixed_cov[t]
+        vol = np.sqrt(np.diag(sigma))
+        raw = np.array([1.0, 1.0]) / vol
+        portfolio_var = float(raw @ sigma @ raw)
+        scalar = params.target_vol / math.sqrt(portfolio_var)
+        expected = raw * scalar
+        np.testing.assert_allclose(weight.iloc[t].to_numpy(), expected, rtol=1e-9)
+
+
 def test_partial_active_basket_does_not_poison_other_instruments():
     """One instrument lacking a direction on a bar must not silently zero the others: a single
     exchange holiday for instrument B must not flatten instrument A's real position that day.
