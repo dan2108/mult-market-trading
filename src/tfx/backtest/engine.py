@@ -20,13 +20,22 @@ Accounting (multiplicative, in return space):
 
 Order handling:
 - Where sizing has no decision (signal warm-up, sizing burn-in, padded bar), the engine proposes
-  the CURRENT book weight for that leg instead of skipping it: risk must see and cap the whole
-  book every bar -- if carried legs were invisible to the veto, stale legs from staggered
-  warm-ups/holidays could stack past the heat cap unseen. An unchanged approved leg produces no
-  order (delta 0), so this adds no churn. Halt/kill zeros are REAL 0.0 targets and trade to flat.
+  the CURRENT book weight for that leg instead of skipping it -- via the shared
+  `risk.propose_book`, not an inline substitution, so a live engine gets the identical rule:
+  risk must see and cap the whole book every bar, or stale legs from staggered warm-ups/holidays
+  could stack past the heat cap unseen. An unchanged approved leg produces no order (delta 0),
+  so this adds no churn. Halt/kill zeros are REAL 0.0 targets and trade to flat.
 - An untradable bar cannot fill; the pending order for that instrument lapses (the next bar's
   fresh decision supersedes it -- no stale orders). A cap breach on a leg whose market is closed
   is therefore enforced at its next tradable bar, not silently ignored.
+- The drawdown-halt latch is explicit engine state (`dd_halted`), persisted across bars exactly
+  like `held`/`last_close`/`peak`: once `risk.check` reports a DRAWDOWN_HALT decision, the engine
+  keeps passing `dd_halted=True` for the rest of the run. `risk.check` is pure and has no memory
+  of its own -- an engine that only fed it the raw drawdown number each bar would let a one-bar
+  price bounce silently un-halt the strategy before the flatten fill even lands (see
+  `tfx.core.risk` module docstring). The engine never clears the latch itself; that is the
+  documented human decision, and a backtest run has no human, so once halted it stays halted for
+  the remainder of that run.
 
 Determinism: pure function of (panel, params, cost_model); no wall-clock, no RNG.
 """
@@ -42,7 +51,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..core import risk as risk_module
 from ..core import signal as signal_module
 from ..core import sizing as sizing_module
-from ..core.risk import AccountState, RiskParams
+from ..core.risk import AccountState, RiskLimit, RiskParams
 from ..core.signal import SignalParams
 from ..core.sizing import SizingParams
 from ..costs.model import CostModel
@@ -55,6 +64,7 @@ from ..data.align import FIELD_LEVEL, tradable_mask
 signal_compute = signal_module.compute
 sizing_size = sizing_module.size
 risk_check = risk_module.check
+risk_propose_book = risk_module.propose_book
 shift_for_execution = signal_module.shift_for_execution
 
 TRADE_COLUMNS = (
@@ -121,6 +131,7 @@ def run(
     held = np.zeros(n_instruments)
     last_close = np.full(n_instruments, np.nan)
     pending: np.ndarray | None = None  # NaN entries = no order for that instrument
+    dd_halted = False  # persisted latch (see module docstring); a backtest run never resets it
 
     equity_values = np.empty(n_bars)
     positions_np = np.empty((n_bars, n_instruments))
@@ -199,15 +210,18 @@ def run(
         positions_np[t] = held
 
         # 5) decide the NEXT bar's order from today's sized targets and today's account state.
-        #    Legs sizing has no decision for are proposed AT their current book weight, so the
-        #    veto always sees (and can cap) the whole book, carried legs included.
-        raw = raw_targets.iloc[t].to_numpy(dtype=float)
-        proposal = np.where(np.isnan(raw), held, raw)
+        #    Legs sizing has no decision for are proposed AT their current book weight (shared
+        #    core, not an inline rule) so the veto always sees -- and can cap -- the whole book,
+        #    carried legs included.
+        raw = pd.Series(raw_targets.iloc[t].to_numpy(dtype=float), index=instruments)
+        proposal = risk_propose_book(raw, pd.Series(held, index=instruments))
         decision = risk_check(
-            pd.Series(proposal, index=instruments),
-            AccountState(equity=equity, peak_equity=peak),
+            proposal,
+            AccountState(equity=equity, peak_equity=peak, dd_halted=dd_halted),
             params.risk,
         )
+        if any(reason.limit is RiskLimit.DRAWDOWN_HALT for reason in decision.reasons):
+            dd_halted = True  # latch: stays True for the rest of this run (no human to resume)
         approved_np[t] = decision.approved.to_numpy(dtype=float)
         for reason in decision.reasons:
             risk_rows.append(

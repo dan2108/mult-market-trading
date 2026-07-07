@@ -199,6 +199,7 @@ def test_05_parity_function_identity_and_timing_reconstruction():
     assert engine.signal_compute is tfx.core.signal.compute
     assert engine.sizing_size is tfx.core.sizing.size
     assert engine.risk_check is tfx.core.risk.check
+    assert engine.risk_propose_book is tfx.core.risk.propose_book
     assert engine.shift_for_execution is tfx.core.signal.shift_for_execution
 
     fx = _wiggly(1.00, 0.004, 16)
@@ -273,6 +274,47 @@ def test_08_risk_veto_and_drawdown_halt_latch():
         assert flat_equity.nunique() == 1
         halted_bars = events.loc[events["limit"] == "drawdown_halt", "timestamp"]
         assert set(after) <= set(halted_bars)
+
+
+# Regression: the drawdown halt must survive a recovery, not just a monotonic crash. The prior
+# test's crash never bounces, so the OLD emergent-latch code (re-evaluating raw drawdown fresh
+# every bar) would have passed it too -- it never actually exercised the bug. This one does: the
+# fill bar immediately after the halt decision marks the STILL-HELD position against a sharp
+# bounce, recovering equity all the way to a NEW PEAK (raw drawdown hits exactly 0%). A
+# non-latching re-evaluation would see 0% drawdown and re-arm the strategy; the persisted latch
+# must keep it flat regardless.
+def test_drawdown_halt_latch_survives_full_recovery_to_new_peak():
+    ramp = [1.0 * 1.01**i for i in range(8)]
+    crash_bar = ramp[-1] * 0.80          # breaches a 5% halt
+    bounce_bar = crash_bar * 1.35        # marked against the STILL-HELD pre-flatten position
+    settle = [bounce_bar * 1.00, bounce_bar * 1.01, bounce_bar * 1.02, bounce_bar * 1.03]
+    path = ramp + [crash_bar, bounce_bar] + settle
+    halt = RiskParams(
+        per_instrument_cap=100.0, asset_class_cap=100.0, portfolio_heat_cap=100.0,
+        drawdown_halt=0.05,
+    )
+    result = run(_panel({FX: path}), _params(risk=halt))
+
+    equity = result.equity_curve
+    raw_drawdown = 1.0 - equity / equity.cummax()
+    index = equity.index
+
+    first_halt = result.risk_events.loc[
+        result.risk_events["limit"] == "drawdown_halt", "timestamp"
+    ].iloc[0]
+    fill_bar = index[index.get_loc(first_halt) + 1]
+
+    # THE regression check: the bounce genuinely recovers to a new peak at the fill bar -- a
+    # non-latching re-evaluation right there would see 0% drawdown, nowhere near the 5% halt.
+    assert raw_drawdown.loc[fill_bar] == pytest.approx(0.0, abs=1e-9)
+
+    # yet the position stays flat from the fill bar through the rest of the run: the latch, not
+    # the recomputed drawdown, is what's deciding.
+    after = index[index.get_loc(fill_bar) :]
+    assert (result.positions.loc[after] == 0.0).to_numpy().all()
+    assert set(after) <= set(
+        result.risk_events.loc[result.risk_events["limit"] == "drawdown_halt", "timestamp"]
+    )
 
 
 # 9 — Hand-calc + oracle: exact expected trades/equity (tests/fixtures/backtest_handcalc.md).
