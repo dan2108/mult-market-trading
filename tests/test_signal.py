@@ -120,6 +120,31 @@ def test_05_padded_bars_produce_no_signal():
     assert not pd.isna(direction["A"].iloc[3])  # A unaffected by B's pad
 
 
+# Regression: an anchor landing on THIS instrument's own holiday pad must not blank an
+# otherwise-computable signal (row-offset vs tradable-bar-offset lookback counting).
+def test_anchor_skips_own_pad_counts_tradable_bars_not_calendar_rows():
+    closes = [100, 102, 104, 106, 108, 110, 112, 114]
+    panel = _panel({"X": closes}, pad={"X": {3}})
+    direction = compute(panel, SignalParams(lookbacks=(2,)))["X"]
+
+    # position 3 is the pad itself: still untradable, still no signal, regardless of anchoring.
+    assert pd.isna(direction.iloc[3])
+
+    # THE regression check: position 5's naive row-offset anchor (close.shift(2)) would land
+    # exactly on position 3 (the pad) and blank an otherwise fully-available signal. Counting
+    # back 2 of X's own TRADABLE bars instead anchors on position 2 (close=104): a real,
+    # non-NaN direction. Confirm the two rules actually disagree here, or this test proves
+    # nothing.
+    close = panel[("X", "close")]
+    old_row_offset_anchor = close.shift(2).iloc[5]
+    assert pd.isna(old_row_offset_anchor)
+    assert not pd.isna(direction.iloc[5])
+    assert direction.iloc[5] == 1.0  # close[5]=110 vs the tradable-bar anchor close[2]=104
+
+    # bars unaffected by the pad's 2-bar shadow (position 2, before the pad) are untouched.
+    assert direction.iloc[2] == 1.0  # close[2]=104 vs close[0]=100
+
+
 # 6 — Parameter bounds respected; degenerate params handled.
 def test_06_parameter_bounds_and_degenerate_handling():
     for bad in ((), (0,), (-3,), (2, 2), (5, 3), (1, -2, 3)):

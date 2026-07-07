@@ -56,6 +56,31 @@ class SignalParams(BaseModel):
         return value
 
 
+def _anchor(close: pd.DataFrame, tradable: pd.DataFrame, lookback: int) -> pd.DataFrame:
+    """Close price `lookback` TRADABLE bars ago, per instrument -- counting only that
+    instrument's own valid trading history, not calendar-row offsets on the union-aligned panel.
+
+    `close.shift(lookback)` would count back `lookback` ROWS of the union calendar, which is
+    wrong two ways: (1) an anchor landing exactly on this instrument's OWN holiday pad blanks an
+    otherwise-fully-available signal for one bar, even though real anchors exist a bar or two
+    away; (2) the union calendar's row count depends on the WHOLE basket's composition, so
+    adding a 24/7 instrument (crypto) silently changes what `lookback=21` means for every
+    weekday instrument, without changing any parameter. Counting back `lookback` of THIS
+    instrument's own tradable bars keeps a lookback's meaning fixed regardless of what else is
+    in the basket or which bar a neighbor's holiday happens to fall on.
+
+    Still causal: for each instrument, its own valid (tradable) closes are compressed into their
+    own chronological series and shifted purely backward, then remapped onto the panel's full
+    index -- every anchor value is a strictly earlier real observation of that same instrument.
+    """
+    out = {}
+    for column in close.columns:
+        own_tradable_close = close[column].where(tradable[column])
+        anchor = own_tradable_close.dropna().shift(lookback)
+        out[column] = anchor.reindex(close.index)
+    return pd.DataFrame(out, index=close.index, columns=close.columns)
+
+
 def compute(panel: pd.DataFrame, params: SignalParams) -> pd.DataFrame:
     """Direction per instrument per bar: mean of sign(trailing return) across the ensemble.
 
@@ -65,10 +90,12 @@ def compute(panel: pd.DataFrame, params: SignalParams) -> pd.DataFrame:
     model than later ones -- no regime discontinuity partway through a validate fold.
     """
     close = panel.xs("close", level=FIELD_LEVEL, axis=1)
-    valid = tradable_mask(panel)
+    tradable = tradable_mask(panel)
+    valid = tradable.copy()
     sign_sum = None
     for lookback in params.lookbacks:
-        trailing_return = close / close.shift(lookback) - 1.0
+        anchor = _anchor(close, tradable, lookback)
+        trailing_return = close / anchor - 1.0
         sign = np.sign(trailing_return)
         sign_sum = sign if sign_sum is None else sign_sum + sign
         valid &= trailing_return.notna()
