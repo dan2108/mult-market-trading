@@ -93,9 +93,12 @@ def test_01_handcomputed_metrics():
     assert metrics["sharpe"] == pytest.approx(
         r.mean() / r.std(ddof=1) * math.sqrt(252.0), rel=1e-12
     )
-    downside = r[r < 0]
+    # downside deviation = RMS of min(r, 0) over ALL bars (target 0), not the std of losing
+    # bars alone around their own mean -- see _sortino's docstring for why that's a different,
+    # inflated (or NaN-on-uniform-losses) statistic.
+    downside_deviation = math.sqrt(float(np.mean(np.minimum(r, 0.0) ** 2)))
     assert metrics["sortino"] == pytest.approx(
-        r.mean() / downside.std(ddof=1) * math.sqrt(252.0), rel=1e-12
+        r.mean() / downside_deviation * math.sqrt(252.0), rel=1e-12
     )
     assert metrics["hit_rate"] == pytest.approx(0.6, rel=1e-12)
     assert metrics["avg_win"] == pytest.approx(0.25 / 3.0, rel=1e-12)
@@ -188,6 +191,11 @@ def test_06_edge_cases():
     assert metrics["max_drawdown"] == pytest.approx(0.857375 - 1.0, rel=1e-12)
     assert metrics["drawdown_duration_bars"] == 3
     assert math.isnan(metrics["avg_win"])
+    # uniform losses (-5% every bar): a real, finite, deeply negative Sortino -- NOT NaN. The
+    # old (buggy) std-of-losing-bars formula divided by zero here (identical losses have zero
+    # sample variance around their own mean) and silently reported NaN, hiding the worst case.
+    assert not math.isnan(metrics["sortino"])
+    assert metrics["sortino"] < 0
 
     # single instrument: correlation degenerates to an empty frame, everything else defined
     single, _ = _synthetic_result(EQUITY)
@@ -198,6 +206,29 @@ def test_06_edge_cases():
 
 
 # --- units -------------------------------------------------------------------------------------
+def test_sortino_downside_deviation_not_inflated_by_consistent_large_losses():
+    """Regression: consistent, severe losses must produce a small/very-negative Sortino, not an
+    inflated one. The old (buggy) formula divided by the STD of losing bars around their OWN
+    mean -- for near-identical large losses that denominator collapses toward zero, making
+    Sortino explode in magnitude exactly when downside risk is worst."""
+    from tfx.report.metrics import _sortino
+
+    # small mixed wins/losses: healthy, moderate Sortino
+    mild = pd.Series([0.01, -0.01, 0.01, -0.01, 0.01, -0.01])
+    # severe, nearly-uniform losses with tiny wins: the dangerous case
+    severe = pd.Series([0.001, -0.05, 0.001, -0.0499, 0.001, -0.0501])
+
+    mild_sortino = _sortino(mild)
+    severe_sortino = _sortino(severe)
+
+    # the severe-loss series must NOT report a larger (less negative / more positive) Sortino
+    # than the mild one just because its losses happen to be nearly identical in size.
+    assert severe_sortino < mild_sortino
+    # and it must be a real, finite, clearly negative number -- not NaN, not exploded.
+    assert not math.isnan(severe_sortino)
+    assert -100 < severe_sortino < 0
+
+
 def test_markdown_renders_real_run():
     report = generate(_real_result())
     markdown = to_markdown(report)

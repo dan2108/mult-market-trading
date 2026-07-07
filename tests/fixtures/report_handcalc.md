@@ -11,8 +11,9 @@ full curve:  [1.0, 1.10, 0.99, 1.0395, 0.987525, 1.0862775]   (6 bars)
 - **total_return** = 1.0862775 - 1 = +0.0862775 exactly
 - **CAGR** = 1.0862775^(252/6) - 1  (years = n_bars/252 = 6/252; asserted via the formula)
 - **Sharpe** = mean(r)/std(r, ddof=1) * sqrt(252), mean = 0.02, asserted via the formula
-- **Sortino**: downside = {-0.10, -0.05}; std(downside, ddof=1) = 0.03535534...;
-  = 0.02 / 0.03535534 * sqrt(252)
+- **Sortino**: downside DEVIATION (not the std of losing bars alone) = RMS of min(r, 0) over
+  ALL 5 bars, target 0: min(r,0) = {0, -0.10, 0, -0.05, 0}; squared = {0, 0.01, 0, 0.0025, 0};
+  mean = 0.0025; sqrt = 0.05 exactly. Sortino = 0.02 / 0.05 * sqrt(252) = 6.34980...
 - **max_drawdown**: running peak hits 1.10 at bar 1; trough 0.987525 at bar 4:
   0.987525/1.10 - 1 = **-0.10225** exactly
 - **drawdown duration**: bars 2..5 are all below the 1.10 peak (bar 5 ends at 1.0862775 < 1.10,

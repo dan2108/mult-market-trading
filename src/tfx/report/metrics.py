@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from ..backtest.engine import BacktestResult
@@ -42,13 +43,19 @@ class Report:
 
 
 def _sortino(returns: pd.Series) -> float:
-    downside = returns[returns < 0]
-    if len(downside) < 2:
+    """Annualized Sortino: mean return over the DOWNSIDE DEVIATION -- the root-mean-square of
+    returns below the target (0), computed over ALL bars (wins count as zero shortfall, they
+    are not excluded). This is deliberately NOT the sample std of the losing bars alone around
+    THEIR OWN mean: that statistic shrinks toward zero as losses become large but consistent
+    (the mean is subtracted out), inflating Sortino exactly when downside risk is worst, and
+    returns NaN for uniform losses instead of a small/negative Sortino."""
+    values = returns.to_numpy(dtype=float)
+    if len(values) < 2:
         return float("nan")
-    downside_std = float(downside.std(ddof=1))
-    if downside_std == 0.0:
+    downside_deviation = math.sqrt(float(np.mean(np.minimum(values, 0.0) ** 2)))
+    if downside_deviation == 0.0:
         return float("nan")
-    return float(returns.mean() / downside_std * math.sqrt(TRADING_DAYS_PER_YEAR))
+    return float(values.mean() / downside_deviation * math.sqrt(TRADING_DAYS_PER_YEAR))
 
 
 def _longest_run(below_peak: pd.Series) -> int:
