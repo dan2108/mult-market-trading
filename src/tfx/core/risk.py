@@ -20,9 +20,17 @@ Design decisions:
   trade nobody proposed. The exceptions are the kill switch and the drawdown halt, which force
   0.0 everywhere: flat means flat.
 - Unknown symbols raise (same no-silent-fallthrough rule as `tfx.costs.params.get_params`).
-- The drawdown halt latches emergently: halted -> flat -> equity freezes -> drawdown stays at or
-  past the threshold -> still halted. Resuming is a HUMAN decision (equity injection / param
-  change), deliberately not automated in v1.
+- The drawdown halt is an EXPLICIT latch, not an emergent one. `check` is still pure -- it never
+  remembers anything between calls -- so the latch bit (`AccountState.dd_halted`) is state the
+  CALLER persists, exactly like `peak_equity`. This matters because being flat does not freeze
+  drawdown by itself: a position closed at the halt bar can still be marked at a stale price one
+  bar later, and a price bounce between the halt decision and the flatten fill can pull equity
+  back over the threshold before the flatten even lands -- an emergent "halted while
+  |drawdown| >= threshold" latch would silently un-halt on that bounce and let the strategy
+  re-enter mid-flatten. The caller must set `dd_halted=True` the first time `check` returns
+  `halted=True` for a DRAWDOWN_HALT reason, and keep passing `dd_halted=True` on every
+  subsequent call regardless of what drawdown recovers to. Resuming is a HUMAN decision (a new
+  run, or an explicit reset) -- `check` itself never clears it.
 """
 
 from __future__ import annotations
@@ -57,13 +65,20 @@ class RiskParams(BaseModel):
 
 class AccountState(BaseModel):
     """The account truth `check` needs, passed in by the caller (backtest loop / live cycle).
-    The caller maintains it (`peak_equity = max(peak_equity, equity)`); risk only reads it."""
+    The caller maintains it (`peak_equity = max(peak_equity, equity)`); risk only reads it.
+
+    `dd_halted` is the persisted drawdown-auto-halt LATCH, distinct from `kill_switch` (an
+    external operator override): the caller sets it True the first bar `check` returns a
+    DRAWDOWN_HALT decision, and must keep passing True on every later call -- `check` has no
+    memory of its own, so an un-persisted latch silently un-halts the moment drawdown recovers
+    even one bar early (see module docstring)."""
 
     model_config = ConfigDict(frozen=True)
 
     equity: float = Field(gt=0)
     peak_equity: float = Field(gt=0)
     kill_switch: bool = False
+    dd_halted: bool = False
 
     @property
     def drawdown(self) -> float:
@@ -99,6 +114,26 @@ class RiskDecision:
     halted: bool
 
 
+def propose_book(raw_targets: pd.Series, held: pd.Series) -> pd.Series:
+    """Construct the FULL-BOOK proposal `check` should see: wherever sizing has no decision
+    (NaN -- warm-up, burn-in, an untradable bar), propose the CURRENTLY HELD weight instead of
+    leaving that leg invisible.
+
+    Every cap in `check` (per-instrument, asset-class, portfolio-heat) sums over only the
+    non-NaN legs of its input -- a leg left NaN here is silently absent from every gross
+    calculation, no matter how large its held position, because nothing ever scales it. A
+    single stale leg, unnoticed, can let the true book gross drift arbitrarily far past the
+    heat cap validate proved binding.
+
+    This lives in shared core -- not inline in the backtest loop -- specifically so BOTH engines
+    call the identical substitution before calling `check`. A live engine that instead passes
+    sizing's raw output straight to `check` (a natural reading of "risk sits between sizing and
+    execution") would let carried legs escape every cap the backtest enforced: parity requires
+    the proposal-construction rule to be as shared as the veto itself.
+    """
+    return raw_targets.where(raw_targets.notna(), held)
+
+
 def check(proposed: pd.Series, state: AccountState, params: RiskParams) -> RiskDecision:
     """Veto/scale one bar's proposed weights. Only ever reduces: every stage multiplies by a
     scalar in [0, 1]. Raises KeyError on any symbol not in the instrument basket."""
@@ -109,6 +144,21 @@ def check(proposed: pd.Series, state: AccountState, params: RiskParams) -> RiskD
             approved=pd.Series(0.0, index=proposed.index),
             reasons=(
                 RiskReason(RiskLimit.KILL_SWITCH, None, 0.0, "kill switch set: all flat"),
+            ),
+            halted=True,
+        )
+
+    # The persisted latch takes precedence over re-evaluating the trigger: once the caller has
+    # recorded a halt, it stays halted regardless of what drawdown recovers to this bar (see
+    # module docstring -- an un-persisted, re-evaluated-every-bar halt can un-latch on a bounce).
+    if state.dd_halted:
+        return RiskDecision(
+            approved=pd.Series(0.0, index=proposed.index),
+            reasons=(
+                RiskReason(
+                    RiskLimit.DRAWDOWN_HALT, None, 0.0,
+                    "drawdown halt latched by caller: all flat (human resume required)",
+                ),
             ),
             halted=True,
         )

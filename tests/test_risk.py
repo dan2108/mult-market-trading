@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from tfx.core.risk import AccountState, RiskLimit, RiskParams, check
+from tfx.core.risk import AccountState, RiskLimit, RiskParams, check, propose_book
 
 # Real basket symbols spanning three asset classes (fx, fx, index, commodity).
 FX_A, FX_B, IDX, COM = "EUR/USD", "AUD/JPY", "S&P 500", "Gold"
@@ -101,6 +101,36 @@ def test_04_drawdown_halt_boundary_both_sides():
         assert _limits(halted.reasons) == {RiskLimit.DRAWDOWN_HALT}
 
 
+# Regression: the drawdown halt is an EXPLICIT, caller-persisted latch, not a re-evaluated
+# trigger. Once dd_halted is set, check() must stay flat even if drawdown itself has since
+# recovered under the threshold -- proving a bounce between the halt decision and the caller's
+# flatten fill can't silently re-arm trading.
+def test_drawdown_halt_latch_survives_a_recovered_drawdown():
+    params = RiskParams(drawdown_halt=0.20)
+    proposed = pd.Series({FX_A: 0.3, COM: np.nan})
+
+    # equity has recovered to a mere 5% drawdown -- WITHOUT the persisted latch this would pass
+    # straight through un-halted (see test_04's under-threshold case at 25%).
+    recovered_but_latched = AccountState(
+        equity=95_000.0, peak_equity=100_000.0, dd_halted=True,
+    )
+    decision = check(proposed, recovered_but_latched, params)
+
+    assert (decision.approved == 0.0).all()  # still flat, including the NaN leg
+    assert decision.halted
+    assert _limits(decision.reasons) == {RiskLimit.DRAWDOWN_HALT}
+
+    # kill switch still takes precedence when both are set (order documented in the module).
+    both = AccountState(
+        equity=95_000.0, peak_equity=100_000.0, kill_switch=True, dd_halted=True,
+    )
+    assert _limits(check(proposed, both, params).reasons) == {RiskLimit.KILL_SWITCH}
+
+    # the field defaults to False: every existing call site (and every other test in this file)
+    # is unaffected unless a caller explicitly persists the latch.
+    assert AccountState(equity=1.0, peak_equity=1.0).dd_halted is False
+
+
 # 5 — Kill switch: when set, all -> flat, no new trades, regardless of everything else.
 def test_05_kill_switch_flattens_everything():
     state = AccountState(equity=100_000.0, peak_equity=100_000.0, kill_switch=True)
@@ -120,8 +150,9 @@ def test_06_monotonic_safety_property():
     values = [-2.5, -0.6, -0.5, -0.1, 0.0, 0.2, 0.5, 3.0, float("nan")]
     states = [
         HEALTHY,
-        AccountState(equity=70_000.0, peak_equity=100_000.0),                    # dd-halted
+        AccountState(equity=70_000.0, peak_equity=100_000.0),                    # dd-triggered
         AccountState(equity=100_000.0, peak_equity=100_000.0, kill_switch=True),  # killed
+        AccountState(equity=100_000.0, peak_equity=100_000.0, dd_halted=True),   # latched
     ]
     params_grid = [
         RiskParams(),
@@ -196,6 +227,30 @@ def test_08_handcomputed_fixture_slice_and_purity():
 
 
 # --- additional unit tests -------------------------------------------------------------------
+def test_propose_book_substitutes_held_only_where_sizing_has_no_decision():
+    """propose_book is the shared-core fix for the whole-book parity gap: a NaN leg (no fresh
+    sizing decision) must be replaced with its CURRENT book weight before check() ever sees it,
+    so the caps sum over the true book, not just the legs sizing happened to decide this bar."""
+    raw = pd.Series({FX_A: np.nan, FX_B: -0.3, COM: 0.0})
+    held = pd.Series({FX_A: 0.6, FX_B: 0.0, COM: 0.9})
+
+    proposal = propose_book(raw, held)
+
+    assert proposal[FX_A] == 0.6   # NaN -> substituted with the held weight
+    assert proposal[FX_B] == -0.3  # a real decision always wins, even over a nonzero holding
+    assert proposal[COM] == 0.0    # a real decision of exactly flat is NOT "no decision"
+
+    # composes directly with check(): the substituted leg is now visible to every cap -- the
+    # heat cap's gross sum is 0.9 (0.6 + 0.3 + 0.0), not 0.3 (what it would see if FX_A's held
+    # weight had stayed NaN and been silently excluded from the sum).
+    params = RiskParams(per_instrument_cap=100.0, asset_class_cap=100.0, portfolio_heat_cap=1.0)
+    decision = check(proposal, HEALTHY, params)
+    assert not pd.isna(decision.approved[FX_A])
+    assert float(decision.approved.abs().sum()) == pytest.approx(0.9)
+    without_substitution = check(raw, HEALTHY, params)
+    assert float(without_substitution.approved.abs().sum()) == pytest.approx(0.3)
+
+
 def test_nan_passthrough_and_exact_zeros():
     proposed = pd.Series({FX_A: float("nan"), FX_B: 0.0})
     decision = check(proposed, HEALTHY, RiskParams())
