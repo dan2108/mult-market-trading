@@ -69,7 +69,7 @@ trend-fx/
 
 ## Build order
 
-`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` → `risk` → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
+`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` ✓ → `risk` → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
 
 ---
 
@@ -115,25 +115,23 @@ ensemble upgrade (mean of signs across ~1–12-month lookbacks, graded [-1, +1])
 
 ---
 
-## Step 4 — `sizing`  (core)
+## Step 4 — `sizing`  (core)  ·  DONE
 
-**Goal:** turn directions into sizes via **volatility targeting + portfolio construction** — each instrument sized inversely to its (point-in-time) volatility so each contributes ~equal risk, scaled to a target portfolio vol, correlation-aware, leverage-capped. The highest-impact module.
+Delivered: two-stage vol-targeted, correlation-aware sizing behind `sizing.size(panel, directions,
+params)`. Stage 1: inverse-vol raw weight per instrument (`direction / EWMA vol`, halflife 20 bars,
+log returns, annualized ×√252). Stage 2: one portfolio scalar from the full EWMA covariance
+quadratic form rescales the vector to `target_vol` (0.10 annualized) — off-diagonal covariance is
+where correlation is priced in (a correlated pair can't jointly carry more risk than the
+correlation implies). Hard gross-leverage cap (3.0) applied last. Covariance updates are
+all-or-nothing per bar (never partial/asymmetric) and only run forward; the math runs over the
+usable subset only (`np.ix_`) so one NaN/holiday/zero-vol instrument can't poison the rest. Flat
+direction → exactly 0.0; unknown/untradable/insufficient history → NaN. All 8 acceptance tests +
+units green, cross-checked against an independent plain-numpy oracle (`sizing_handcalc.md`).
 
-**Scope —** in: point-in-time vol estimate (rolling/EWMA), inverse-vol scaling, portfolio vol target, correlation adjustment, leverage cap. out: direction (signal), veto (risk), execution, costs.
-
-**Interface:** `sizing.size(directions, panel/vol, params) -> position weights per instrument per bar`. Vol & correlation from past data only.
-
-**Acceptance tests:**
-1. **Equal-risk:** for equal directions, a more volatile instrument gets a smaller position than a calmer one.
-2. **Portfolio vol target:** ex-ante portfolio vol from the estimates ≈ target, within tolerance.
-3. **No look-ahead:** vol/correlation at t use data ≤ t — future bars don't change size[t].
-4. Flat signal → zero size.
-5. Leverage cap respected (gross exposure ≤ cap).
-6. Correlation handled — two highly-correlated instruments don't jointly carry more risk than one would (no double-counting).
-7. Pure & deterministic; padded bars → no size.
-8. Fixture slice matches hand-computed sizes.
-
-**Done:** tests green; vol & correlation method + target documented; no-look-ahead asserted.
+**Open before building on it:** `ewma_halflife` / `target_vol` / `leverage_cap` are PROVISIONAL
+placeholders — halflife is swept at `validate`; target vol and the leverage cap are policy, held
+fixed there. Signal warm-up (`lookback` bars) and sizing burn-in (`ceil(halflife)` NaN-free bars)
+gate independently — the backtest treats NaN as "no decision, carry position."
 
 ---
 

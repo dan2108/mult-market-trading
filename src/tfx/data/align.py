@@ -84,3 +84,23 @@ def tradable_mask(panel: pd.DataFrame) -> pd.DataFrame:
     close = panel.xs("close", level=FIELD_LEVEL, axis=1)
     not_pad = (quality & int(QualityFlag.ALIGN_PAD)) == 0
     return not_pad & close.notna()
+
+
+WEEKDAY_PERIODS_PER_YEAR = 252.0  # standard convention: every instrument closes on weekends
+CALENDAR_PERIODS_PER_YEAR = 365.0  # the basket includes a 24/7 instrument (e.g. crypto)
+
+
+def periods_per_year(index: pd.DatetimeIndex) -> float:
+    """Annualization factor implied by a panel's OWN calendar, not a silently-hardcoded
+    constant: 365 if any row falls on a weekend, else the standard 252 weekday convention.
+
+    Since `align()`'s master calendar is the UNION of every instrument's own trading days, a
+    weekend row can exist only because some instrument in the basket actually trades that day
+    (e.g. crypto). Deriving the factor from the index -- rather than from a module-level
+    constant -- means adding a 24/7 instrument to a weekday basket correctly changes every
+    consumer's annualization (vol targeting, Sharpe, CAGR, turnover) instead of leaving them
+    silently measuring against the wrong number of bars per year.
+    """
+    if (index.dayofweek >= 5).any():
+        return CALENDAR_PERIODS_PER_YEAR
+    return WEEKDAY_PERIODS_PER_YEAR
