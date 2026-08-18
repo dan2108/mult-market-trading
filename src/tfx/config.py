@@ -34,6 +34,9 @@ class Settings(BaseSettings):
 
     cache_dir: Path = Path("data/cache")
     sample_dir: Path = Path("data/sample")
+    # Raw provider snapshots (verbatim HTTP bytes + sha256 sidecars), one subdir per source.
+    # Gitignored build input, like data/cache -- committed mini-snapshots live in tests/fixtures.
+    raw_dir: Path = Path("data/raw")
 
     # Max consecutive missing *weekday* bars tolerated before a gap is flagged "unexpected"
     # (covers long holiday weekends). Weekend gaps are always expected.
