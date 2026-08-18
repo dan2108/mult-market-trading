@@ -41,12 +41,22 @@ from .base import DataSource
 #: unmapped instrument RAISES (same no-silent-fallthrough rule as tfx.costs.params.get_params).
 STOOQ_SYMBOLS: dict[str, str] = {
     "EUR/USD": "eurusd",
+    "USD/JPY": "usdjpy",
+    "GBP/USD": "gbpusd",
     "AUD/JPY": "audjpy",
+    "USD/CAD": "usdcad",
     "GBP/CHF": "gbpchf",
+    "NZD/USD": "nzdusd",
     "S&P 500": "^spx",
     "DAX": "^dax",
-    "Gold": "xauusd",   # spot XAU/USD
-    "Oil": "cl.f",      # WTI front-month continuation (roll artifacts screened at data report)
+    "Nikkei 225": "^nkx",
+    "FTSE 100": "^ukx",
+    "Gold": "xauusd",    # spot XAU/USD
+    "Silver": "xagusd",  # spot XAG/USD
+    "Oil": "cl.f",       # WTI front-month continuation (roll artifacts screened at data report)
+    "Nat Gas": "ng.f",   # Henry Hub front-month continuation (same screening applies)
+    "BTC/USD": "btcusd",
+    "ETH/USD": "ethusd",
 }
 
 _BASE_URL = "https://stooq.com/q/d/l/"

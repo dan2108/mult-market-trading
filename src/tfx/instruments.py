@@ -66,28 +66,63 @@ class Instrument(BaseModel):
         return WEEKLY_CLOSED_DAYS[self.asset_class]
 
 
-# The v1 basket — chosen for low cross-correlation (BUILD.md). Confirmed against the broker later.
+# The v1 basket — breadth across lowly-correlated markets is THE dominant driver of
+# trend-following performance (BUILD.md north star), so v1 spans FX majors/crosses, equity
+# indices across three regions, commodities across energy/metals, and crypto. Bonds/rates are
+# DEFERRED: the current provider carries US treasury series only as YIELDS, not prices — trading
+# a yield series would corrupt returns and costs; revisit with a futures-price provider.
+# Final list confirmed against the live broker later.
 BASKET: tuple[Instrument, ...] = (
     Instrument(symbol="EUR/USD", name="Euro / US Dollar",
+               asset_class=AssetClass.FX, session_close_tz="America/New_York",
+               quote_currency="USD"),
+    Instrument(symbol="USD/JPY", name="US Dollar / Japanese Yen",
+               asset_class=AssetClass.FX, session_close_tz="America/New_York",
+               quote_currency="JPY"),
+    Instrument(symbol="GBP/USD", name="British Pound / US Dollar",
                asset_class=AssetClass.FX, session_close_tz="America/New_York",
                quote_currency="USD"),
     Instrument(symbol="AUD/JPY", name="Australian Dollar / Japanese Yen",
                asset_class=AssetClass.FX, session_close_tz="America/New_York",
                quote_currency="JPY"),
+    Instrument(symbol="USD/CAD", name="US Dollar / Canadian Dollar",
+               asset_class=AssetClass.FX, session_close_tz="America/New_York",
+               quote_currency="CAD"),
     Instrument(symbol="GBP/CHF", name="British Pound / Swiss Franc",
                asset_class=AssetClass.FX, session_close_tz="America/New_York",
                quote_currency="CHF"),
+    Instrument(symbol="NZD/USD", name="New Zealand Dollar / US Dollar",
+               asset_class=AssetClass.FX, session_close_tz="America/New_York",
+               quote_currency="USD"),
     Instrument(symbol="S&P 500", name="S&P 500 Index",
                asset_class=AssetClass.EQUITY_INDEX, session_close_tz="America/New_York",
                quote_currency="USD"),
     Instrument(symbol="DAX", name="DAX 40 Index",
                asset_class=AssetClass.EQUITY_INDEX, session_close_tz="Europe/Berlin",
                quote_currency="EUR"),
+    Instrument(symbol="Nikkei 225", name="Nikkei 225 Index",
+               asset_class=AssetClass.EQUITY_INDEX, session_close_tz="Asia/Tokyo",
+               quote_currency="JPY"),
+    Instrument(symbol="FTSE 100", name="FTSE 100 Index",
+               asset_class=AssetClass.EQUITY_INDEX, session_close_tz="Europe/London",
+               quote_currency="GBP"),
     Instrument(symbol="Gold", name="Gold (XAU/USD)",
+               asset_class=AssetClass.COMMODITY, session_close_tz="America/New_York",
+               quote_currency="USD"),
+    Instrument(symbol="Silver", name="Silver (XAG/USD)",
                asset_class=AssetClass.COMMODITY, session_close_tz="America/New_York",
                quote_currency="USD"),
     Instrument(symbol="Oil", name="WTI Crude Oil",
                asset_class=AssetClass.COMMODITY, session_close_tz="America/New_York",
+               quote_currency="USD"),
+    Instrument(symbol="Nat Gas", name="Henry Hub Natural Gas",
+               asset_class=AssetClass.COMMODITY, session_close_tz="America/New_York",
+               quote_currency="USD"),
+    Instrument(symbol="BTC/USD", name="Bitcoin / US Dollar",
+               asset_class=AssetClass.CRYPTO, session_close_tz="UTC",
+               quote_currency="USD"),
+    Instrument(symbol="ETH/USD", name="Ether / US Dollar",
+               asset_class=AssetClass.CRYPTO, session_close_tz="UTC",
                quote_currency="USD"),
 )
 

@@ -183,6 +183,18 @@ def data_report(
     max_gap: int | None = typer.Option(
         None, "--max-gap", help="Max consecutive missing weekdays before a gap is 'unexpected'."
     ),
+    strict: bool = typer.Option(
+        False, "--strict",
+        help="Provider-onboarding gate: exit 1 on short history, unexpected gaps, or extreme "
+             "one-bar moves (roll artifacts / bad ticks).",
+    ),
+    min_years: float = typer.Option(
+        10.0, "--min-years", help="Minimum years of history required by --strict (crypto exempt)."
+    ),
+    max_move: float = typer.Option(
+        0.25, "--max-move",
+        help="One-bar |close return| beyond this is flagged by --strict.",
+    ),
 ) -> None:
     """Print a data-quality report from the cache (coverage, gaps, repairs)."""
     settings = get_settings()
@@ -190,7 +202,10 @@ def data_report(
     cdir = cache_dir or settings.cache_dir
 
     try:
-        report = build_report(cdir, syms, start, end, max_weekday_gap_days=max_gap)
+        report = build_report(
+            cdir, syms, start, end,
+            max_weekday_gap_days=max_gap, extreme_move_threshold=max_move,
+        )
     except (DataError, FileNotFoundError, KeyError, ValueError) as exc:
         _fail(str(exc))
 
@@ -225,6 +240,15 @@ def data_report(
         "[dim]Note: daily bars use each instrument's native session date; cross-asset timing is "
         "approximate at daily resolution (see tfx.instruments).[/dim]"
     )
+
+    if strict:
+        failures = report.strict_failures(min_years=min_years)
+        if failures:
+            err_console.print("[red]STRICT GATE: FAIL[/red]")
+            for failure in failures:
+                err_console.print(f"  {failure}")
+            raise typer.Exit(code=1)
+        console.print("[green]STRICT GATE: PASS[/green] (data fit for the validate gate)")
 
 
 if __name__ == "__main__":
