@@ -51,6 +51,33 @@ def test_pull_then_report(tmp_path):
     assert report_result.exit_code == 0, report_result.output
 
 
+def test_backtest_run_after_pull(tmp_path):
+    cdir = tmp_path / "cache"
+    pull_result = runner.invoke(
+        app,
+        [
+            "data", "pull", "--symbols", "EUR/USD,Gold",
+            "--start", "2023-01-02", "--end", "2024-12-31",
+            "--cache-dir", str(cdir), "--sample-dir", str(SAMPLE_DIR),
+        ],
+    )
+    assert pull_result.exit_code == 0, pull_result.output
+
+    result = runner.invoke(
+        app,
+        ["backtest", "run", "--symbols", "EUR/USD,Gold",
+         "--start", "2023-01-02", "--end", "2024-12-31", "--cache-dir", str(cdir)],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_backtest_without_cache_fails(tmp_path):
+    result = runner.invoke(
+        app, ["backtest", "run", "--cache-dir", str(tmp_path / "missing")]
+    )
+    assert result.exit_code == 1
+
+
 def test_unknown_source_fails(tmp_path):
     result = runner.invoke(
         app,

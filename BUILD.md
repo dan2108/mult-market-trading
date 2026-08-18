@@ -69,7 +69,7 @@ trend-fx/
 
 ## Build order
 
-`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` ✓ → `risk` ✓ → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
+`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` ✓ → `risk` ✓ → `backtest` ✓ → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
 
 ---
 
@@ -162,26 +162,29 @@ decision in v1.
 
 ---
 
-## Step 6 — `backtest`
+## Step 6 — `backtest`  ·  DONE
 
-**Goal:** the simulator. Walk the panel bar by bar, call the **exact shared core** (signal→sizing→risk) with point-in-time data, apply costs on every fill and swap on every hold, track positions/equity/trades. Deterministic. Output: trade log + equity curve.
+Delivered: bar-by-bar simulator behind `backtest.run(panel, params, cost_model) ->
+BacktestResult` (equity curve, on-the-books positions, approved targets, trade log, cost ledger,
+per-instrument attribution, risk-event audit trail). **Timing:** decision at close[t] → fill at
+close[t+1] (never the close the signal saw) → first earned return close[t+1]→close[t+2] — one
+bar more lag than the theoretical minimum, deliberately pessimistic. **Parity is structural:**
+the engine binds `signal.compute` / `sizing.size` / `risk.check` / `shift_for_execution` as
+module attributes (function-object identity asserted in tests) and internally reconciles its
+positions against `shift_for_execution(approved)` + the carry rule every run. **Costs:** every
+fill pays floored spread + commission + adverse slippage at the fill price; every overnight hold
+pays swap for the CALENDAR nights since the previous bar (Fri→Mon = 3 nights; 24/7 calendars
+accrue nightly). **Whole-book risk:** legs sizing has no decision for are re-proposed at their
+current book weight so the veto sees and caps the entire book — carried legs can never stack
+past the heat cap unseen (a reduce order for a closed market lapses and is enforced at the
+reopen, documented). Accounting is multiplicative in return space; equity reconciles bar-by-bar
+from the published frames alone. All 9 acceptance tests + units green, anchored by a hand-calc
+slice (`backtest_handcalc.md`) and a full independent oracle re-implementation of the engine
+mechanics in test code. CLI: `tfx backtest run`.
 
-**Scope —** in: the event loop, execution at the correct next-bar price, cost/swap application, accounting, trade log, equity curve. out: the core (imported), walk-forward (validate), metrics (report), live.
-
-**Interface:** `backtest.run(panel, core, costs, params) -> {trade_log, equity_curve, positions}`.
-
-**Acceptance tests:**
-1. **No look-ahead (cardinal):** decisions at t use data ≤ t and execute at t+1 — injecting future bars must not change any historical trade or fill.
-2. **Execution timing:** fills at the next-bar price, never the same-bar close the signal was computed on.
-3. **Costs applied:** every entry/exit pays spread/commission; every overnight hold pays swap. A do-nothing run has flat equity; a churning run bleeds costs.
-4. **Accounting integrity:** equity reconciles bar-by-bar (start + realized + unrealized − costs); no money created or destroyed.
-5. **Parity:** the core invoked is the importable shared module live uses — not a reimplementation (assert it).
-6. Deterministic — identical trade log + equity curve for identical inputs.
-7. Padded/NaN bars: no trading; positions carry correctly across calendar gaps.
-8. Risk veto respected — logged positions never exceed risk-approved sizes.
-9. Fixture mini-scenario (few bars, known signal) yields the exact expected trades/equity.
-
-**Done:** tests green; the no-look-ahead test is explicit and strict; parity asserted; accounting reconciles.
+**Open before building on it:** research output only — the verdict comes from `validate`
+(Step 7), never from a single backtest table. Fill-at-next-close is the v1 convention; a
+next-bar-open variant is a possible later refinement, strictly behind the gate.
 
 ---
 
