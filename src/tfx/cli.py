@@ -324,6 +324,60 @@ def validate_run(
         raise typer.Exit(code=1)
 
 
+@app.command("report")
+def report_command(
+    symbols: str | None = typer.Option(
+        None, "--symbols", "-s", help="Comma-separated symbols (default: full basket)."
+    ),
+    start: str = typer.Option(DEFAULT_START, "--start", help="Start date YYYY-MM-DD."),
+    end: str = typer.Option(DEFAULT_END, "--end", help="End date YYYY-MM-DD."),
+    cache_dir: str | None = typer.Option(None, "--cache-dir", help="Override cache dir."),
+    out: str | None = typer.Option(
+        None, "--out", help="Also write the full report as markdown to this path."
+    ),
+) -> None:
+    """Full metric report of a backtest over the cached panel. Observational only."""
+    from pathlib import Path
+
+    from .backtest import run as run_backtest
+    from .data.loader import load
+    from .report import generate, to_markdown
+
+    settings = get_settings()
+    syms = _parse_symbols(symbols)
+    cdir = cache_dir or settings.cache_dir
+
+    try:
+        panel = load(syms, start, end, cache_dir=cdir)
+        report = generate(run_backtest(panel))
+    except (DataError, FileNotFoundError, KeyError, ValueError) as exc:
+        _fail(str(exc))
+
+    table = Table(title=f"Backtest report  {start} to {end}")
+    table.add_column("Metric")
+    table.add_column("Value")
+    from .report.render import _format
+
+    for key, value in report.metrics.items():
+        table.add_row(key, _format(key, value))
+    console.print(table)
+
+    contrib = Table(title="Per-instrument contribution (net of costs)")
+    contrib.add_column("Instrument")
+    contrib.add_column("Contribution")
+    for symbol, value in report.contributions.items():
+        contrib.add_row(str(symbol), f"{value:+.4%}")
+    console.print(contrib)
+
+    if out is not None:
+        Path(out).write_text(to_markdown(report), encoding="utf-8")
+        console.print(f"[green]Wrote[/green] {out}")
+    console.print(
+        "[dim]Observational only -- numbers deterministic, interpretation lives in the "
+        "research workflow. The gate is [bold]tfx validate[/bold].[/dim]"
+    )
+
+
 @data_app.command("report")
 def data_report(
     symbols: str | None = typer.Option(None, "--symbols", "-s", help="Comma-separated symbols."),
