@@ -25,6 +25,10 @@ env/
 data/cache/
 *.parquet.tmp
 
+# Raw provider snapshots (verbatim HTTP bytes + sha256 sidecars) — build input, not source.
+# Committed mini-snapshots for tests live under tests/fixtures/stooq/ instead.
+data/raw/
+
 # OS / IDE
 .DS_Store
 Thumbs.db

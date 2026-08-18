@@ -106,6 +106,12 @@ def data_pull(
     ),
     sample_dir: str | None = typer.Option(None, "--sample-dir", help="Override fixture dir."),
     cache_dir: str | None = typer.Option(None, "--cache-dir", help="Override cache dir."),
+    raw_dir: str | None = typer.Option(
+        None, "--raw-dir", help="Override raw-snapshot dir (snapshot-backed sources)."
+    ),
+    refresh: bool = typer.Option(
+        False, "--refresh", help="Force re-download of provider snapshots (else reuse)."
+    ),
 ) -> None:
     """Fetch -> clean -> align -> cache the basket for a date range."""
     settings = get_settings()
@@ -113,9 +119,13 @@ def data_pull(
     src = source or settings.data.provider
     cdir = cache_dir or settings.cache_dir
     sdir = sample_dir or settings.sample_dir
+    rdir = raw_dir or settings.raw_dir
 
     try:
-        result = pull_data(syms, start, end, source=src, cache_dir=cdir, sample_dir=sdir)
+        result = pull_data(
+            syms, start, end, source=src, cache_dir=cdir, sample_dir=sdir,
+            raw_dir=rdir, refresh=refresh,
+        )
     except (DataError, FileNotFoundError, NotImplementedError, ValueError, KeyError) as exc:
         _fail(str(exc))
 
@@ -135,6 +145,35 @@ def data_pull(
         )
     console.print(table)
     console.print("Next: run [bold]tfx data report[/bold] to inspect coverage and gaps.")
+
+
+@data_app.command("snapshot")
+def data_snapshot(
+    symbol: str = typer.Option(..., "--symbol", help="Canonical symbol, e.g. 'EUR/USD'."),
+    file: str = typer.Option(
+        ..., "--file", help="A provider CSV downloaded manually (e.g. in a browser)."
+    ),
+    raw_dir: str | None = typer.Option(None, "--raw-dir", help="Override raw-snapshot dir."),
+) -> None:
+    """Register a manually-downloaded stooq CSV as a verified snapshot (bytes + sha256 sidecar).
+
+    Escape hatch for networks where the stooq endpoint serves an anti-bot challenge: download
+    the CSV in a browser, then register it here so `tfx data pull --source stooq` can use it.
+    """
+    from pathlib import Path
+
+    from .data.sources.stooq import StooqSource
+
+    settings = get_settings()
+    rdir = Path(raw_dir or settings.raw_dir) / "stooq"
+    try:
+        instrument = get_instrument(symbol)
+        raw = Path(file).read_bytes()
+        path = StooqSource(rdir).write_snapshot(instrument, raw)
+    except (DataError, FileNotFoundError, KeyError, OSError) as exc:
+        _fail(str(exc))
+    console.print(f"[green]Snapshot registered[/green] {instrument.symbol} -> {path}")
+    console.print("Next: [bold]tfx data pull --source stooq[/bold] (reuses the snapshot).")
 
 
 @backtest_app.command("run")
@@ -190,6 +229,18 @@ def data_report(
     max_gap: int | None = typer.Option(
         None, "--max-gap", help="Max consecutive missing weekdays before a gap is 'unexpected'."
     ),
+    strict: bool = typer.Option(
+        False, "--strict",
+        help="Provider-onboarding gate: exit 1 on short history, unexpected gaps, or extreme "
+             "one-bar moves (roll artifacts / bad ticks).",
+    ),
+    min_years: float = typer.Option(
+        10.0, "--min-years", help="Minimum years of history required by --strict (crypto exempt)."
+    ),
+    max_move: float = typer.Option(
+        0.25, "--max-move",
+        help="One-bar |close return| beyond this is flagged by --strict.",
+    ),
 ) -> None:
     """Print a data-quality report from the cache (coverage, gaps, repairs)."""
     settings = get_settings()
@@ -197,7 +248,10 @@ def data_report(
     cdir = cache_dir or settings.cache_dir
 
     try:
-        report = build_report(cdir, syms, start, end, max_weekday_gap_days=max_gap)
+        report = build_report(
+            cdir, syms, start, end,
+            max_weekday_gap_days=max_gap, extreme_move_threshold=max_move,
+        )
     except (DataError, FileNotFoundError, KeyError, ValueError) as exc:
         _fail(str(exc))
 
@@ -232,6 +286,15 @@ def data_report(
         "[dim]Note: daily bars use each instrument's native session date; cross-asset timing is "
         "approximate at daily resolution (see tfx.instruments).[/dim]"
     )
+
+    if strict:
+        failures = report.strict_failures(min_years=min_years)
+        if failures:
+            err_console.print("[red]STRICT GATE: FAIL[/red]")
+            for failure in failures:
+                err_console.print(f"  {failure}")
+            raise typer.Exit(code=1)
+        console.print("[green]STRICT GATE: PASS[/green] (data fit for the validate gate)")
 
 
 if __name__ == "__main__":

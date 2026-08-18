@@ -63,7 +63,15 @@ byte-deterministic while still giving trend signals a continuous (adjusted) seri
 
 ## Instrument basket (v1)
 
-`EUR/USD`, `AUD/JPY`, `GBP/CHF`, `S&P 500`, `DAX`, `Gold`, `Oil` — chosen for low cross-correlation.
+17 markets across four asset classes — breadth across lowly-correlated markets is the dominant
+driver of trend-following performance:
+
+- **FX (7):** `EUR/USD`, `USD/JPY`, `GBP/USD`, `AUD/JPY`, `USD/CAD`, `GBP/CHF`, `NZD/USD`
+- **Equity indices (4):** `S&P 500`, `DAX`, `Nikkei 225`, `FTSE 100`
+- **Commodities (4):** `Gold`, `Silver`, `Oil` (WTI), `Nat Gas`
+- **Crypto (2):** `BTC/USD`, `ETH/USD` (24/7 calendar)
+
+Bonds/rates are deferred: the current provider carries US treasuries only as yields, not prices.
 Final list confirmed against the live broker/data source later.
 
 ## Roadmap
