@@ -69,7 +69,7 @@ trend-fx/
 
 ## Build order
 
-`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` ✓ → `risk` → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
+`data-pull` ✓ → `costs` ✓ → `signal` ✓ → `sizing` ✓ → `risk` ✓ → `backtest` → `validate` (the gate) → `report` → *(Phase 2: `broker` → `live` → `monitor`)*
 
 ---
 
@@ -138,25 +138,27 @@ gate independently — the backtest treats NaN as "no decision, carry position."
 
 ---
 
-## Step 5 — `risk`  (core)
+## Step 5 — `risk`  (core)  ·  DONE
 
-**Goal:** the deterministic veto between sized positions and execution — per-trade cap, portfolio-heat cap, correlation/exposure cap, drawdown auto-halt, kill switch. Can only ever **reduce** risk. Identical in backtest and live.
+Delivered: the deterministic veto behind `risk.check(proposed, account_state, params) ->
+RiskDecision` (approved weights + a machine-readable reason per reduction + a `halted` flag).
+Fixed application order: kill switch → drawdown auto-halt → per-instrument cap → asset-class
+gross cap → portfolio-heat (gross) cap — every stage multiplies by a scalar in [0, 1], so
+**monotonic safety holds by construction** (|approved| ≤ |proposed|, sign never flips; pinned by
+a deterministic grid property test). Pure per-bar function: all state (equity, peak equity, kill
+switch) arrives via a frozen `AccountState` the caller maintains — nothing stored, identical in
+backtest and live. Caps live in weight space and never touch the panel: sizing already prices
+statistical correlation, so risk's exposure clustering is deterministic per `AssetClass` — a
+backstop that cannot drift with an estimator. NaN proposals pass through as "no decision" except
+under halt/kill, which force real 0.0 everywhere (flat means flat). Unknown symbols raise. All 8
+acceptance tests + units green; every limit has a test proving it fires; exact hand-calc fixture
+(`risk_handcalc.md`) where all three caps bind at once and final gross lands on the heat cap
+exactly.
 
-**Scope —** in: the limits above + account state (equity, drawdown, open exposure). out: signal, sizing, execution, data.
-
-**Interface:** `risk.check(proposed_positions, account_state, params) -> approved_positions + reasons`.
-
-**Acceptance tests:**
-1. Per-trade cap: no approved position risks more than the cap; oversized proposals scaled down.
-2. Portfolio-heat cap: total risk ≤ cap; positions scaled pro-rata if exceeded.
-3. Correlation/exposure cap: clustered exposure ≤ cap.
-4. Drawdown halt: breaching the DD limit blocks new risk / flattens.
-5. Kill switch: when set, all → flat, no new trades.
-6. **Monotonic safety:** `risk.check` never increases a size or flips a sign — only reduces/zeros.
-7. **Limits actually fire:** a stress fixture breaches each limit; assert the veto.
-8. Pure & deterministic; reasons returned for every reduction (auditability).
-
-**Done:** tests green; **every limit has a test proving it fires**; documented.
+**Open before building on it:** cap levels are PROVISIONAL **policy** — never swept or fit at
+validate (a guardrail tuned to the data is not a guardrail). The drawdown halt latches
+emergently (halted → flat → equity freezes → still halted); resuming is a deliberate human
+decision in v1.
 
 ---
 
