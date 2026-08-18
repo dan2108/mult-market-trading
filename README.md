@@ -7,8 +7,9 @@ real engineering poured into **risk and position sizing** — not the entry. Edg
 and validated*, never chosen because it's popular. Nothing goes live until validation shows
 positive expectancy **out-of-sample, after realistic costs, after a ~50% haircut**.
 
-> Status: **v1 — `data-pull`** (the foundation). See [BUILD.md](BUILD.md) for the full plan and
-> [CLAUDE.md](CLAUDE.md) for the standing engineering rules.
+> Status: **v1 — building the core** (`data-pull` ✓ · `costs` ✓ · `signal` ✓ · now: `sizing`).
+> See [BUILD.md](BUILD.md) for the full plan and [CLAUDE.md](CLAUDE.md) for the standing
+> engineering rules.
 
 ## Why this design
 
@@ -67,5 +68,5 @@ Final list confirmed against the live broker/data source later.
 
 ## Roadmap
 
-`data-pull` (now) → `costs` → core (`signal`/`sizing`/`risk`) → `backtest` → `validate` →
+`data-pull` ✓ → `costs` ✓ → core (`signal` ✓ / `sizing` / `risk`) → `backtest` → `validate` →
 `report` → Phase 2 (`broker` → `live` → `monitor`).
